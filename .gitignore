@@ -1,0 +1,29 @@
+# 依存関係
+node_modules/
+
+# ビルド成果物
+dist/
+build/
+*.tsbuildinfo
+
+# CDK
+infra/cdk.out/
+cdk.out/
+
+# 環境・秘密情報（Gitに置かない）
+.env
+.env.*
+*.pem
+*.key
+
+# ログ・一時ファイル
+*.log
+.DS_Store
+Thumbs.db
+
+# テストカバレッジ
+coverage/
+
+# エディタ
+.vscode/*
+!.vscode/extensions.json

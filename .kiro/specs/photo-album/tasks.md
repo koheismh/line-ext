@@ -1,0 +1,177 @@
+# Implementation Plan
+
+写真・動画共有アルバム（MVP v0.2）の実装タスク。各タスクは下位（基盤・ストレージ）から上位（API・UI・配信）へ依存順に並べる。各サブタスクには対応する要件番号を付す。コードコメント・ドキュメントは日本語で記述する。レビュー反映後の要件番号に対応。
+
+- [x] 1. プロジェクト基盤とスキャフォールド
+  - TypeScript モノレポ構成を作成（`frontend/` `backend/` `infra/` `shared/`、npm workspaces）
+  - lint（ESLint）・typecheck（tsc）・ユニットテスト（Vitest）の共通設定を用意
+  - `shared/src` にドメイン型を定義（User に `sessionVersion`、Group に `name`/`adminUserIds` 配列、Media に `errorReason`/`declaredByteSize`/`declaredMimeType`/`videoCodec`/`capturedAt`/`fileLastModified`/`uploadId`、Album に `coverSource`、Comment に `status`/`replyToCommentId`、MediaStatus に `expired`）。暫定値を `constants.ts` に集約、`api.ts` にAPI入出力型
+  - ULID による時刻順ID生成ユーティリティ（`id.ts`）とユニットテスト
+  - _Requirements: 8-7, 4-10_
+
+- [x] 2. ドメイン層（純粋関数）とユニットテスト
+  - [x] 2.1 メディア状態機械（`mediaState.ts`：単調性、error(preview_failed)→validating の再処理のみ許可、放置失効、skip判定、可視性/URL発行/削除可否）
+    - _Requirements: 4-8, 5-4, 7-7, 7-10, 7-11_
+  - [x] 2.2 入力バリデーション（`validation.ts`：MIMEで種別判定、MOV含む対応形式、容量上限、合計/単体の大容量判定）
+    - _Requirements: 4-5, 4-6, 4-21, 4-22_
+  - [x] 2.3 表紙自動選定・再選定（`cover.ts`：coverSource=auto のみ自動、手動非上書き、同一アルバム・ready・写真に限定）
+    - _Requirements: 3-7, 3-8, 3-9, 3-10_
+  - [x] 2.4 コメント2階層ルール（`comment.ts`：root/children判定、replyToで同一root解決、墓標、子全滅墓標の非表示、削除の非破壊）
+    - _Requirements: 6-3, 6-4, 6-5, 6-6_
+  - [x] 2.5 操作×役割の権限判定（`authz.ts`：閲覧/作成/編集/アップロード/削除/コメント/招待を正本で判定）
+    - _Requirements: 8-4, 2-4, 3-1, 3-5, 7-1_
+  - テスト: 計55件（状態機械・バリデーション・表紙・コメント・認可）。正常系/非メンバー/操作権限なしを網羅
+
+- [x] 3. ストレージ層 repo（S3 JSON IO）
+  - [x] 3.1 S3 JSON の get/put、ETag条件付き書き込み（`jsonStore.ts`：putJsonIfMatch で If-Match→412をConflict変換、putJsonIfAbsent で If-None-Match:*→AlreadyExists、getJson/getJsonOrThrow）。キー構築を `keys.ts` に集約
+    - _Requirements: 3-11, 8-8, 1-4_
+  - [x] 3.2 locator index（`locator.ts`：media/album/comment の作成=IfAbsent・解決・修復=無条件put、欠落は正本不在としてnull）
+    - _Requirements: 8-8_
+  - [x] 3.3 メディアオブジェクトIO（`mediaObjects.ts`：用途別期限の署名URL発行と同一(key,kind)の再利用キャッシュ、アップロード署名にContent-Length/Type、CopyObject、サイズ検証、DeleteObject、ListParts合計）
+    - _Requirements: 5-6, 5-7, 5-8, 7-3, 7-4, 4-4_
+  - テスト: aws-sdk-client-mock でS3をモックし計27件（条件付き書き込み・locator・コピー検証・署名URL再利用など）。AWS SDK v3 を条件付き書き込み対応版(3.1155.0)へ更新
+  - _注: repo単体テストで検証。実AWSでのETag競合・CopyObject挙動は未検証（実環境デプロイ時に確認）_
+
+- [x] 4. 認証（LINE Login OIDC）とセッション ※中核ロジックを実装。HTTPハンドラ結線はタスク13（API Gateway統合）で行う
+  - [x] 4.1 state・nonce・PKCE(S256)生成（`pkce.ts`）、戻り先=同一オリジン相対パスの検証（`redirect.ts`、オープンリダイレクト対策）
+    - _Requirements: 1-1, 1-9_
+  - [x] 4.2 IDトークン検証（`oidc.ts`：LINE JWKSで署名・issuer・audience・nonce・exp検証。jose使用）。キャンセル/エラーは呼び出し側で利用者向けに変換
+    - _Requirements: 1-2, 1-3, 1-10_
+  - [x] 4.3 初回ログインの二重作成防止は repo の putJsonIfAbsent（If-None-Match:*）で担保。表示名更新はログイン処理で実施（ハンドラ結線時）
+    - _Requirements: 1-4, 1-5_
+  - [x] 4.4 無期限署名付きセッション（`session.ts`：HMAC署名、sessionVersion照合で無効化）、Cookie属性（`cookie.ts`：Secure/HttpOnly/SameSite=Lax、Max-Ageなし、クリア用）
+    - _Requirements: 1-6, 1-7, 1-8_
+  - [x] 4.5 CSRF/Origin検証（`csrf.ts`：変更系は同一オリジンのみ）。セッション必須化・`GET /api/me` はハンドラ結線時
+    - _Requirements: 1-11, 1-12_
+  - テスト: 計23件（戻り先・PKCE・セッション署名/検証/版数・Cookie・CSRF）。OIDC署名検証はLINE JWKS依存のため実機確認扱い（未検証）
+
+- [x] 5. 認可層（操作×役割・正本ベース）
+  - `app/entities.ts`: locator→正本取得（album/media/comment/group）をETag付きで提供
+  - `app/authorize.ts`: アルバム閲覧/編集/アップロード、メディア閲覧/削除、コメント投稿の認可を解決。ドメイン権限関数（タスク2.5）を正本に適用
+  - `app/errors.ts`: AppError（401/403/404...）。閲覧権限なしは404（存在を隠す）、操作権限なしは403に区別
+  - `app/context.ts`: バケット名など実行時設定を環境変数から構築
+  - クライアント申告値を認可に用いず、取得した正本で判定。テスト9件（非メンバー404・編集/削除の403・locator不在404）
+  - _Requirements: 8-4, 8-5, 2-11_
+
+- [x] 6. グループと招待のユースケース（`app/groups.ts`） ※HTTPハンドラ結線はタスク13
+  - [x] 6.1 createGroup（name必須・トリム・作成者を管理者兼メンバー・user-groups作成）、getGroupDetail（メンバー表示名一覧、非メンバーは404）
+    - _Requirements: 2-1, 2-2, 2-9, 2-11_
+  - [x] 6.2 issueInvite（管理者のみ、乱数トークン→sha256キーに期限付き保存、平文は応答のみ・保存しない、inviteId=ハッシュ）
+    - _Requirements: 2-3, 2-4_
+  - [x] 6.3 revokeInvite（管理者のみ、revokedAt設定、冪等）
+    - _Requirements: 2-8_
+  - [x] 6.4 acceptInvite（期限/失効/不正検証、メンバー追加はETag条件付き再試行で冪等、user-groups修復）
+    - _Requirements: 2-5, 2-6, 2-7_
+  - テスト: インメモリS3モックで結合検証9件（作成・詳細の404・発行の403・失効冪等・受け入れ冪等・期限切れ410・平文非保存）。AppError に 410(Gone) を追加
+
+- [x] 7. アルバムのユースケース（`app/albums.ts`） ※HTTPハンドラ結線はタスク13
+  - [x] 7.1 createAlbum（group所有は非メンバー403、album-locator作成）、listAlbums（個人＋所属グループを集約、user-groups残骸は正本照合で除外）
+    - _Requirements: 3-1, 3-2, 3-3_
+  - [x] 7.2 getAlbum（locatorで所有主体解決・閲覧権限検証、権限なしは404）、updateAlbum（作成者のみ、タイトル/説明/表紙、ETag条件付き）
+    - _Requirements: 3-4, 3-5, 3-6, 3-11_
+  - [x] 7.3 表紙変更の検証（同一アルバム・ready・写真のみ、違反は422）、recalcCover（auto自動設定/手動据え置き、システム更新はETag競合を内部再試行）
+    - _Requirements: 3-7, 3-8, 3-9, 3-10_
+  - repo に `listing.ts`（ListObjectsV2）、テスト用 `testing/memoryS3.ts`（インメモリS3）を追加。テスト10件
+
+- [x] 8. アップロードのユースケース（`app/uploads.ts`） ※HTTPハンドラ結線はタスク13
+  - [x] 8.1 initSingleUpload（メンバー認可・形式415/容量413検証、Content-Length/Content-Typeを署名、mediaId・media(uploading)・media-locator作成）
+    - _Requirements: 4-1, 4-2, 4-3, 4-5, 4-6, 4-10_
+  - [x] 8.2 initMultipartUpload（CreateMultipartUpload、uploadId+パート署名URL群、uploadId保存）、reissuePartUrls（パートURL再発行）
+    - _Requirements: 4-11, 4-12, 4-13, 4-15_
+  - [x] 8.3 completeUpload（ListPartsで合計サイズ検証→申告超過413→CompleteMultipartUpload→status=validating、冪等）。repoにマルチパート操作を追加
+    - _Requirements: 4-4, 4-11_
+  - テスト5件（single作成・非メンバー404・形式415/容量413・multipart開始/完了validating・合計超過413）。memoryS3をマルチパート対応に拡張
+
+- [x] 9. CDK: StorageStack（`infra/src/stacks/storageStack.ts`）
+  - メタデータ/メディアバケットを BlockPublicAccess.BLOCK_ALL・enforceSSL・S3暗号化・RemovalPolicy.RETAIN で作成（静的フロントは DeliveryStack に配置）
+  - メディアS3 Lifecycle: `trash/` に Expiration（30日）、`AbortIncompleteMultipartUpload`（1日・全体）。`originals/`・`previews/` は対象外
+  - メディアS3 CORS（オリジン限定・PUT/GET/HEAD・ExposeHeaders に ETag）
+  - AWS Budgets（月額・通知のみ・自動停止しない）
+  - CDK実行は tsx（`.js`拡張子import解決のため）。`cdk synth` 成功を確認。Template assertions 6件
+  - _注: 総容量上限の強制はアプリ側（将来）。ここではバケット基盤とコスト通知まで。実デプロイは未実施_
+  - _Requirements: 4-14, 7-12, 8-1, 8-11, 8-12, 8-9_
+
+- [x] 10. ProcessingStack＋処理ロジック（`infra/src/stacks/processingStack.ts`, `backend/src/app/processing.ts`, `deletion.ts`）
+  - [x] 10.1 EventBridge 経由で originals/ の ObjectCreated をサムネイルLambdaへ（S3直結せず循環回避、mediaBucketは eventBridgeEnabled、対象プレフィックス限定、最小権限IAM: originals読取/previews書込）
+    - _Requirements: 8-9_
+  - [x] 10.2 実検証はアダプタ(MediaProcessor)に隔離。検証失敗は error(invalid_file)、プレビューは呼ばない（ロジック実装・テスト済み。Sharp/FFmpeg実処理はデプロイ時バンドル）
+    - _Requirements: 4-7, 4-8_
+  - [x] 10.3 プレビュー生成成功で ready、失敗で error(preview_failed)。Lambdaは timeout 5分/memory 2048（設計反映）。実処理注入はデプロイ時
+    - _Requirements: 5-1, 5-4_
+  - [x] 10.4 冪等・単調性（deleting/trashed/expired/error(invalid_file)はskip、書き込み時に状態再確認し ready に戻さない）
+    - _Requirements: 4-9_
+  - [x] 10.5 削除ワーカー(SQS+DLQ)：コピー→サイズ検証→元削除→trashed（冪等・途中失敗から再試行）。定期掃除(10分rate)：classifyForSweepで deleting10分再試行/uploading・validating24時間 expireStaleMedia（未完了マルチパートabort）
+    - _Requirements: 7-7, 7-11_
+  - テスト: 処理6件・削除10件・ProcessingStack 4件。`cdk synth --all` 成功。memoryS3にコピー/削除/Head対応追加
+
+- [x] 11. メディア参照・削除のユースケース（`app/mediaQuery.ts`＋タスク10の`deletion.ts`） ※HTTPハンドラ結線はタスク13
+  - [x] 11.1 listAlbumMedia（ready のみ、プレビューURL同梱、ULIDキーで登録日時昇順、ページング、処理中/失敗は投稿者本人のみ表示）
+    - _Requirements: 5-2, 5-5, 5-10, 5-11, 4-24_
+  - [x] 11.2 getMediaUrl（kind=preview|original|video|download、権限確認後 ready のみ、用途別期限＋同一URL再利用、original/downloadは検証済みMIMEで上書き、video専用チェック、deleting以降/trashは発行しない404）
+    - _Requirements: 5-6, 5-7, 5-8, 5-9, 5-11, 5-12, 7-13_
+  - [x] 11.3 startDelete（タスク10）：操作権限（投稿者/管理者/個人は所有者）、deleting化・deletedDate/退避先キー確定、削除ジョブ返却（SQS投入・202はhandler）
+    - _Requirements: 7-1, 7-2, 7-8, 7-9_
+  - [x] 11.4 error/放置メディアの削除・失効（canStartDeleteがerror許可、expireStaleMediaで失効）
+    - _Requirements: 7-10, 7-11_
+  - テスト7件（ready限定・投稿者可視・非メンバー404・URL用途別・deleting発行拒否・video判定）
+
+- [x] 12. コメントのユースケース（`app/comments.ts`） ※HTTPハンドラ結線はタスク13
+  - [x] 12.1 listComments（対象認可、buildThreadsで墓標・子全滅の表示ルール、対象メディアがdeleting以降なら非表示）
+    - _Requirements: 6-7, 6-12_
+  - [x] 12.2 postComment（2階層固定でresolveRootCommentId、replyToCommentId記録、comment-locator作成、対象がdeleting以降/不存在なら拒否、保存は生値でXSSは表示時）
+    - _Requirements: 6-1, 6-2, 6-3, 6-4, 6-8, 6-10_
+  - [x] 12.3 deleteComment（markDeletedで親=墓標化・子=非表示、投稿者/管理者のみ、他コメント非破壊、冪等）
+    - _Requirements: 6-5, 6-6, 6-9_
+  - テスト9件（投稿/一覧・返信の同一root・生値保存・非メンバー404・deleting対象拒否・親墓標/子残存・子削除非破壊・権限403・管理者削除）
+
+- [x] 13. API結線とCDK: AuthApiStack / DeliveryStack
+  - [x] 13.0 HTTPハンドラ結線（`backend/src/handlers/`）: router（メソッド＋パスで全ユースケースへディスパッチ）、authMiddleware（セッション検証＋sessionVersion照合＋CSRF）、http（AppError→HTTPステータス変換、Cookie）、runtimeConfig（SSM/環境変数）
+    - _Requirements: 1-11, 1-12_
+  - [x] 13.1 AuthApiStack（API Gateway HTTP API、ANY /{proxy+}、API Lambda、最小権限IAM: メタRW/メディアRead・originals put、SSM SecureString参照）
+    - _Requirements: 8-6, 8-9, 8-11_
+  - [x] 13.2 DeliveryStack（静的フロントS3+CloudFront+OAC、`/api/*`転送・CACHING_DISABLED・Cookie転送、CloudFront Functions で拡張子なしパスを /index.html に書き換え）
+    - _Requirements: 8-1, 8-2, 8-3_
+  - テスト: AuthApi/Delivery のTemplate assertions 4件。`cdk synth --all`（4スタック）成功。@types/aws-lambda追加
+  - _注: SSMパラメータ値の投入・LINEコールバックURL/ALLOWED_ORIGINのドメイン確定・Lambda実コードのバンドルはデプロイ時。削除202後のSQS投入結線もデプロイ時_
+
+- [x] 14. フロント基盤（`frontend/`）
+  - Vite + React + React Router、SessionContext（/api/me で解決）、BrowserRouter
+  - shared型を用いた型付きAPIクライアント（`services/api.ts`）：ApiClientError で status/code 保持、credentials: same-origin でCookie送信、204/202対応
+  - ルーティング枠（App.tsx：LoginGate で未ログインはLINEログイン導線＋戻り先）。各ページ本体はタスク16
+  - 表示はReact標準エスケープ（dangerouslySetInnerHTML不使用）。外部ブラウザ誘導はタスク16/URL生成側
+  - テスト3件（成功・エラー変換・204）。`vite build` 成功
+  - _Requirements: 8-7, 6-11, 10-1, 10-2, 10-3_
+
+- [x] 15. フロント アップロード機能（`frontend/src/features/upload/`）
+  - [x] 15.1 容量判定（`size.ts`：一括=合計、個別=単体、閾値50MB、sharedの定数を再利用）
+    - _Requirements: 4-21, 4-22_
+  - [x] 15.2 回線ガード（`networkGuard.ts`：classifyConnection=Wi-Fi/有線のみ許可、cellular/unknownは確認、decideUpload、localStorageで24時間抑制、端末分岐なし）
+    - _Requirements: 4-16, 4-17, 4-18, 4-19, 4-20_
+  - [x] 15.3 マルチパート並列アップロード（`multipartUploader.ts`：computePartCount/sliceForPart、MULTIPART_CONCURRENCY並列、指数バックオフ再試行、403でパートURL再発行、ETag昇順返却、進捗コールバック）
+    - _Requirements: 4-11, 4-12, 4-13_
+  - [x] 15.4 進捗コールバック実装。成否/検証失敗表示・一覧自動更新・離脱確認・Wake LockはUI結線（タスク16）
+    - _Requirements: 4-23, 4-24, 4-25_
+  - [x] 15.5 保留アップロード（`pendingStore.ts`：メモ型・IndexedDB、本体保存せず、matchesPendingで名前/サイズ/更新日時照合、add/list/count/remove）。保留中はサーバAPIを呼ばない設計
+    - _Requirements: 9-2, 9-3, 9-5, 9-6_
+  - テスト15件（接続判定・ガード決定・抑制・パート分割/並列/再発行）
+
+- [x] 16. フロント 画面（`frontend/src/pages/`, `components/`）
+  - [x] 16.1 HomePage（保留中アップロードのバナー/件数表示・取り消し、アルバム一覧への導線）
+    - _Requirements: 9-1, 9-4, 9-5_
+  - [x] 16.2 AlbumListPage（作成・一覧）/ AlbumDetailPage（プレビューグリッド、処理中プレースホルダ、error表示、useUploadでアップロード・回線ガード確認UI、処理中はポーリング更新）
+    - _Requirements: 5-2, 5-3, 5-4_
+  - [x] 16.3 MediaViewer（権限確認後の写真原本表示・動画再生、動画URL期限切れでonError再取得、保存ダウンロード）
+    - _Requirements: 5-7, 5-8, 5-9, 5-12_
+  - [x] 16.4 GroupPage（メンバー一覧、招待URL発行＋openExternalBrowser付与）、InvitePage（明示参加）、CommentPanel（2階層・返信・墓標表示・標準エスケープ）
+    - _Requirements: 2-1, 2-3, 2-8, 2-9, 6-4, 6-5_
+  - [x] 16.5 削除前の確認ダイアログ（MediaViewer）、ログイン後の戻り先（LoginGateでreturnTo付与）
+    - _Requirements: 7-2, 1-9_
+  - useUpload フックでタスク15ロジックを統合。`vite build` 成功・typecheck/lint クリア
+
+- [x] 17. 結線と受け入れ確認
+  - 受け入れテスト例1〜15を実装モジュール/テストに対応づけ（README のトレーサビリティ表）。ローカル検証可能なものはユニット/結合テストで担保
+  - 実機確認が必要な項目（iOSのMIME/コーデック、LINE内/外部ブラウザ、署名URL実効期限、CopyObject所要時間、Sharp/FFmpeg実処理）は README に「未検証」として整理
+  - 正常系・未認証・非メンバー(404)・操作権限なし(403)・二重実行/障害時の観点を各テストで横断確認
+  - 全体検証: typecheck 合格 / test 全206件合格 / lint クリア / vite build 成功 / cdk synth --all 成功
+  - README に構成・開発コマンド・デプロイ手順（SSM投入・LINE設定・Lambdaバンドル）・未検証項目を記載
+  - _Requirements: 1-7, 2-5, 3-3, 4-11, 4-17, 5-7, 6-3, 7-1, 7-7, 9-5_

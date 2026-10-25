@@ -1,0 +1,31 @@
+{
+  "name": "photo-album",
+  "version": "0.0.0",
+  "private": true,
+  "description": "写真・動画共有アルバム（MVP）モノレポ",
+  "workspaces": [
+    "shared",
+    "backend",
+    "frontend",
+    "infra"
+  ],
+  "scripts": {
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "eslint . --ext .ts,.tsx",
+    "lint:fix": "eslint . --ext .ts,.tsx --fix",
+    "format": "prettier --write \"**/*.{ts,tsx,json,md}\"",
+    "test": "npm run test --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "8.8.0",
+    "@typescript-eslint/parser": "8.8.0",
+    "eslint": "8.57.1",
+    "prettier": "3.3.3",
+    "typescript": "5.6.2",
+    "vitest": "2.1.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
