@@ -4,7 +4,7 @@
 import { Duration, Stack, type StackProps, CfnOutput } from 'aws-cdk-lib';
 import type { IBucket } from 'aws-cdk-lib/aws-s3';
 import { Runtime } from 'aws-cdk-lib/aws-lambda';
-import { Function as LambdaFn, Code } from 'aws-cdk-lib/aws-lambda';
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import {
   HttpApi,
   HttpMethod,
@@ -13,7 +13,12 @@ import {
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import { StringParameter } from 'aws-cdk-lib/aws-ssm';
 import type { Construct } from 'constructs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import type { EnvConfig } from '../config.js';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const lambdaDir = join(here, '..', '..', '..', 'backend', 'src', 'lambda');
 
 export interface AuthApiStackProps extends StackProps {
   config: EnvConfig;
@@ -25,7 +30,7 @@ export interface AuthApiStackProps extends StackProps {
 
 export class AuthApiStack extends Stack {
   readonly api: HttpApi;
-  readonly apiFn: LambdaFn;
+  readonly apiFn: NodejsFunction;
 
   constructor(scope: Construct, id: string, props: AuthApiStackProps) {
     super(scope, id, props);
@@ -47,11 +52,11 @@ export class AuthApiStack extends Stack {
       1,
     );
 
-    // API Lambda（プレースホルダ。実バンドルはデプロイ時に差し替え）
-    this.apiFn = new LambdaFn(this, 'ApiFn', {
+    // API Lambda（NodejsFunction で esbuild バンドル）
+    this.apiFn = new NodejsFunction(this, 'ApiFn', {
       runtime: Runtime.NODEJS_20_X,
-      handler: 'index.handler',
-      code: Code.fromInline('exports.handler = async () => ({ statusCode: 200 });'),
+      entry: join(lambdaDir, 'api.ts'),
+      handler: 'handler',
       timeout: Duration.seconds(29), // API Gateway HTTP API の最大は30秒
       memorySize: 512,
       environment: {
@@ -66,6 +71,7 @@ export class AuthApiStack extends Stack {
           ? { DELETION_QUEUE_URL: props.deletionQueueUrl }
           : {}),
       },
+      bundling: { externalModules: ['@aws-sdk/*'] },
     });
 
     // 最小権限: メタはRW、メディアは署名URL発行のためRead

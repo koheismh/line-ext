@@ -61,10 +61,25 @@ requirements の受け入れテスト例 → 担保する主な実装/テスト�
 4. Lambda 実コードのバンドル（handlers/処理ロジックを esbuild 等でバンドルし、CDKのプレースホルダと差し替え）
 5. `cdk deploy --all` → 出力の CloudFront ドメインを LINE コールバック・`ALLOWED_ORIGIN` へ反映
 
+## 写真プレビュー（sharp）の有効化
+
+サムネイル生成Lambdaは `sharp` を使うが、ネイティブ依存（linux-x64）のため**バンドルから external 扱いで切り離している**。
+開発機に WSL2/Docker が無くてもデプロイできるようにするため。sharp 未供給の間、写真プレビューは
+`error(preview_failed)` になる（他機能は動作する）。
+
+有効化するには、linux-x64・Node20対応の **sharp Lambda Layer** を用意し、環境変数でARNを渡して deploy する:
+
+```
+$env:SHARP_LAYER_ARN = "arn:aws:lambda:ap-northeast-1:<acct>:layer:sharp:<ver>"
+cdk deploy PhotoAlbum-Processing-dev
+```
+
+動画プレビュー（FFmpeg）も同様に Layer 前提。未配備時は動画プレビューを生成しない。
+
 ## 未検証（実機確認が必要）
 
 - iOS Safari / LINE内ブラウザでのファイル選択時の MIME・コーデック
 - 一時認証情報で署名したURLの実効期限、500MBオブジェクトの CopyObject 所要時間
-- Sharp/FFmpeg による実プレビュー生成（現状アダプタ境界まで、Lambda実コードは未バンドル）
+- sharp/FFmpeg による実プレビュー生成（Layer配備後に有効化）
 - 実ブラウザでの IndexedDB 保留・マルチパート並列アップロード・動画再生
 ```
