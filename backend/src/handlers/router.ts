@@ -5,8 +5,8 @@ import type {
   APIGatewayProxyEventV2,
   APIGatewayProxyStructuredResultV2,
 } from 'aws-lambda';
-import { safeReturnPath } from '../auth/index.js';
 import { requireUser, type RequestMeta } from './authMiddleware.js';
+import { handleLineStart, handleLineCallback, handleLogout } from './authFlow.js';
 import { handle, ok, noContent, type HttpResponse } from './http.js';
 import { loadRuntimeConfig, type RuntimeConfig } from './runtimeConfig.js';
 import * as groups from '../app/groups.js';
@@ -57,9 +57,19 @@ export async function route(
   const auth = () => requireUser(app, meta, cfg.secrets.cookieSecret, cfg.allowedOrigin);
 
   return handle(async () => {
-    // --- 認証不要（start/callbackは別ハンドラ想定だが骨格のみ） ---
+    // --- 認証不要 ---
     if (method === 'GET' && path === '/api/health') {
       return ok({ status: 'ok' });
+    }
+    // 認証フロー（ログイン前に呼ばれる）
+    if (method === 'GET' && path === '/api/auth/line/start') {
+      return handleLineStart(event, cfg);
+    }
+    if (method === 'GET' && path === '/api/auth/line/callback') {
+      return handleLineCallback(event, cfg);
+    }
+    if (method === 'POST' && path === '/api/auth/logout') {
+      return handleLogout(event, cfg);
     }
 
     // --- /api/me ---
@@ -247,5 +257,4 @@ export async function handler(
   };
 }
 
-// safeReturnPath は auth/callback ハンドラ実装時に使用する（将来結線）。
-void safeReturnPath;
+
