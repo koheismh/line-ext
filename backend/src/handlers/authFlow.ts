@@ -103,31 +103,52 @@ export async function handleLineCallback(
 
   // ユーザーがキャンセル/エラーの場合
   if (q.error) {
+    console.warn('[auth/callback] line returned error', { error: q.error });
     return redirect(`${cfg.allowedOrigin}/?login_error=1`, [clearTxCookie()]);
   }
 
   const txToken = readCookie(event, TX_COOKIE);
   const tx = txToken ? verifyTx(txToken, cfg.secrets.cookieSecret) : null;
   if (!tx || !q.code || !q.state || q.state !== tx.state) {
+    console.warn('[auth/callback] tx/state check failed', {
+      hasTxCookie: !!txToken,
+      txParsed: !!tx,
+      hasCode: !!q.code,
+      hasState: !!q.state,
+      stateMatch: !!tx && q.state === tx.state,
+      cookieCount: (event.cookies ?? []).length,
+    });
     return redirect(`${cfg.allowedOrigin}/?login_error=1`, [clearTxCookie()]);
   }
 
   // コード交換
-  const { idToken } = await exchangeLineCode({
-    code: q.code,
-    redirectUri: cfg.lineCallbackUrl,
-    channelId: cfg.secrets.lineChannelId,
-    channelSecret: cfg.secrets.lineChannelSecret,
-    codeVerifier: tx.codeVerifier,
-  });
+  let idToken: string;
+  try {
+    const exchanged = await exchangeLineCode({
+      code: q.code,
+      redirectUri: cfg.lineCallbackUrl,
+      channelId: cfg.secrets.lineChannelId,
+      channelSecret: cfg.secrets.lineChannelSecret,
+      codeVerifier: tx.codeVerifier,
+    });
+    idToken = exchanged.idToken;
+  } catch (err) {
+    console.error('[auth/callback] token exchange failed', {
+      message: (err as Error).message,
+      redirectUri: cfg.lineCallbackUrl,
+    });
+    return redirect(`${cfg.allowedOrigin}/?login_error=1`, [clearTxCookie()]);
+  }
 
   // IDトークン検証
   const verified = await verifyLineIdToken({
     idToken,
     channelId: cfg.secrets.lineChannelId,
+    channelSecret: cfg.secrets.lineChannelSecret,
     expectedNonce: tx.nonce,
   });
   if (!verified.ok) {
+    console.error('[auth/callback] id token verify failed', { reason: verified.reason });
     return redirect(`${cfg.allowedOrigin}/?login_error=1`, [clearTxCookie()]);
   }
 
