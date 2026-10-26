@@ -13,6 +13,7 @@ LINEログインした利用者が、個人またはグループのアルバム�
 - **メディア状態機械**: `uploading → validating → ready | error`。再処理は `error(preview_failed) → validating` のみ許可（`error(invalid_file)` は再処理不可）。削除は `ready | error → deleting → trashed`。放置された `uploading`/`validating` は暫定24時間で `expired` へ失効。状態は後戻りしない（単調に進む）。
 - **権限モデル**: 操作×役割で判定（要件8の権限表）。グループ管理者は `groups.adminUserIds`（配列）で表現し、将来の追加・移譲をデータ変更で拡張可能にする。
 - **セッション**: 無期限の署名付きCookie。`users/{userId}.json.sessionVersion` と Cookie 内の版数を照合し、ログアウトで版数を上げて全Cookieを無効化する。
+- **秘密情報の取得**: CDKは環境変数にSSMの**パス名のみ**を渡し（`COOKIE_SECRET_PARAM`等）、Lambda実行時に `@aws-sdk/client-ssm` で値を取得してプロセス内キャッシュする（`handlers/secrets.ts`）。秘密をCloudFormation/環境変数に平文展開せず、SecureStringのデプロイ時展開制約も回避する。
 - **署名付きURL**: 発行は無料、費用は転送量。用途別に期限を分け、同一メディアは有効期限内で同一URLを再利用（キャッシュ・転送量削減）。プレビュー1h / 写真原本5分 / 動画再生30分（暫定）。
 - **削除は非同期**: `DELETE` は `deleting` にして即時応答し、コピー〜元削除はキュー経由Lambdaで実行・自動再試行する（HTTP APIの30秒制限回避）。
 - **時刻順ID**: `mediaId`/`commentId` は ULID または UUIDv7 を用い、ListObjectsV2 の辞書順＝登録日時順になるようにする。
@@ -378,7 +379,7 @@ DELETE /api/media/{mediaId}
 - セッションCookie: Secure/HttpOnly/SameSite=Lax、署名付き、無期限。`sessionVersion` 照合でログアウト時に無効化。変更系は Origin/CSRF 対策。
 - 認可は操作×役割の権限表（requirements 要件8）で判定。管理者は `adminUserIds` 配列。
 - 公開範囲は招待制。管理者のみ招待発行。ユーザー/グループ総容量上限とAPI Gatewayスロットリング。Budgetsは通知のみ（自動停止しない）。
-- 秘密情報は SSM SecureString。フロント・Git に出さない。
+- 秘密情報は SSM SecureString。フロント・Git に出さない。**CDKは環境変数にSSMパス名のみを渡し、Lambda実行時に `@aws-sdk/client-ssm` で値を取得・プロセス内キャッシュ**する（`handlers/secrets.ts`）。CloudFormationテンプレートやLambda環境変数に秘密の平文を残さない（SecureStringのデプロイ時展開制約も回避）。LambdaにはSSM GetParameters + KMS Decrypt(ssm経由限定)の最小権限を付与。
 - IAM 最小権限: Lambda は対象バケット/プレフィックス限定。`s3:*`・`*` リソース不可。`trash/` への署名付きURL発行権限は与えない。アップロード署名に `Content-Length`/`Content-Type` を含める。
 - 入力検証: 形式は拡張子だけで判断せず、アップロード後に実サイズ・MIME/マジックバイト・動画コーデックを検証。プレビュー生成時にEXIF位置情報を除去。
 - CDK に Budgets、ログ保存期間、パブリック公開防止ガードを組み込む。

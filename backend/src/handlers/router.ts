@@ -43,10 +43,10 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-/** ルート定義。method と、パスのセグメントパターンでマッチする。 */
+/** ルート定義。method と、パスのセグメントパターンでマッチする。cfg は呼び出し側で解決して渡す。 */
 export async function route(
   event: APIGatewayProxyEventV2,
-  cfg: RuntimeConfig = loadRuntimeConfig(),
+  cfg: RuntimeConfig,
 ): Promise<HttpResponse> {
   const method = event.requestContext.http.method;
   const path = event.rawPath;
@@ -54,7 +54,7 @@ export async function route(
   const meta = reqMeta(event);
   const { app } = cfg;
 
-  const auth = () => requireUser(app, meta, cfg.cookieSecret, cfg.allowedOrigin);
+  const auth = () => requireUser(app, meta, cfg.secrets.cookieSecret, cfg.allowedOrigin);
 
   return handle(async () => {
     // --- 認証不要（start/callbackは別ハンドラ想定だが骨格のみ） ---
@@ -237,7 +237,8 @@ export async function route(
 export async function handler(
   event: APIGatewayProxyEventV2,
 ): Promise<APIGatewayProxyStructuredResultV2> {
-  const res = await route(event);
+  const cfg = await loadRuntimeConfig();
+  const res = await route(event, cfg);
   return {
     statusCode: res.statusCode,
     headers: res.headers,

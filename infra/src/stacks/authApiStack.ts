@@ -11,7 +11,7 @@ import {
   type CorsHttpMethod,
 } from 'aws-cdk-lib/aws-apigatewayv2';
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
-import { StringParameter } from 'aws-cdk-lib/aws-ssm';
+import { PolicyStatement } from 'aws-cdk-lib/aws-iam';
 import type { Construct } from 'constructs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -36,21 +36,12 @@ export class AuthApiStack extends Stack {
     super(scope, id, props);
     const { config, metaBucket, mediaBucket } = props;
 
-    // SSM からシークレットを参照（CDK synth 時点では値は読み込まない）
-    const cookieSecret = StringParameter.valueForSecureStringParameter(
-      this,
-      `/${config.envName}/photo-album/cookie-secret`,
-      1,
-    );
-    const lineChannelId = StringParameter.valueForStringParameter(
-      this,
-      `/${config.envName}/photo-album/line-channel-id`,
-    );
-    const lineChannelSecret = StringParameter.valueForSecureStringParameter(
-      this,
-      `/${config.envName}/photo-album/line-channel-secret`,
-      1,
-    );
+    // SSM の「パス名」のみを渡す。値は Lambda 実行時に SDK で取得する（secrets.ts）。
+    // SecureString のデプロイ時展開制約を避け、秘密を環境変数/テンプレートに平文で残さない。
+    const prefix = `/${config.envName}/photo-album`;
+    const cookieSecretParam = `${prefix}/cookie-secret`;
+    const lineChannelIdParam = `${prefix}/line-channel-id`;
+    const lineChannelSecretParam = `${prefix}/line-channel-secret`;
 
     // API Lambda（NodejsFunction で esbuild バンドル）
     this.apiFn = new NodejsFunction(this, 'ApiFn', {
@@ -62,10 +53,11 @@ export class AuthApiStack extends Stack {
       environment: {
         META_BUCKET: metaBucket.bucketName,
         MEDIA_BUCKET: mediaBucket.bucketName,
-        COOKIE_SECRET: cookieSecret,
-        LINE_CHANNEL_ID: lineChannelId,
-        LINE_CHANNEL_SECRET: lineChannelSecret,
-        LINE_CALLBACK_URL: '', // DeliveryStack でドメイン確定後にSSM経由で注入
+        // 値ではなくSSMパス名を渡す
+        COOKIE_SECRET_PARAM: cookieSecretParam,
+        LINE_CHANNEL_ID_PARAM: lineChannelIdParam,
+        LINE_CHANNEL_SECRET_PARAM: lineChannelSecretParam,
+        LINE_CALLBACK_URL: '', // ドメイン確定後に設定
         ALLOWED_ORIGIN: '', // 同上
         ...(props.deletionQueueUrl
           ? { DELETION_QUEUE_URL: props.deletionQueueUrl }
@@ -79,6 +71,25 @@ export class AuthApiStack extends Stack {
     mediaBucket.grantRead(this.apiFn);
     // アップロード署名にCreateMultipartUploadが必要
     mediaBucket.grantPut(this.apiFn, 'originals/*');
+    // SSM パラメータの読み取り（復号含む）を対象パスのみに限定して付与
+    this.apiFn.addToRolePolicy(
+      new PolicyStatement({
+        actions: ['ssm:GetParameters', 'ssm:GetParameter'],
+        resources: [
+          `arn:aws:ssm:${this.region}:${this.account}:parameter${prefix}/*`,
+        ],
+      }),
+    );
+    // SecureString 復号のため KMS デフォルトキーの Decrypt を許可
+    this.apiFn.addToRolePolicy(
+      new PolicyStatement({
+        actions: ['kms:Decrypt'],
+        resources: ['*'],
+        conditions: {
+          StringEquals: { 'kms:ViaService': `ssm.${this.region}.amazonaws.com` },
+        },
+      }),
+    );
 
     // API Gateway HTTP API
     this.api = new HttpApi(this, 'HttpApi', {

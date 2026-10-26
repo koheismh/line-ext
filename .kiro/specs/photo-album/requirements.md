@@ -190,7 +190,7 @@ LINEログインした利用者が、本人または所属グループ内だけ�
 3. WHERE フロントエンド THE システム SHALL HTTPSで配信し、APIと認証Cookieを同一オリジンで扱う。
 4. WHEN APIがリソースへのアクセスを判定する THEN システム SHALL クライアント申告の `ownerId`/`albumId`/`mediaId` を信用せず、取得した正本JSONと上表に基づいて操作ごとに認可する。
 5. WHEN 閲覧権限のない参照を受け取る THEN システム SHALL 存在しない場合と同じ404応答にする(存在を推測させない)。閲覧はできるが操作権限がない場合に限り403を返す。
-6. WHERE LINE Channel Secret・Cookie署名鍵などの秘密情報 THE システム SHALL フロントエンドおよびGitに配置せず、安全な保管先(SSM Parameter Store SecureString等)に置く。
+6. WHERE LINE Channel Secret・Cookie署名鍵などの秘密情報 THE システム SHALL フロントエンドおよびGitに配置せず、SSM Parameter Store(SecureString)に置く。CloudFormationテンプレートやLambda環境変数に平文の値を展開せず、Lambda実行時にSDKで取得する(環境変数にはSSMのパス名のみを渡す)。
 7. WHEN APIがエラーを返す THEN システム SHALL 機械可読な形式で返しつつ、画面には利用者向けの説明を表示できるようにする。
 8. WHEN 複数キーにまたがるS3 JSON更新を行う THEN システム SHALL 正本と検索用インデックスを区別し、再実行・修復できる構成にする。
 9. WHERE Lambda および CDK のIAM権限 THE システム SHALL `s3:*` や `*` リソースなどの過剰権限を付与せず、必要最小限に限定する。
