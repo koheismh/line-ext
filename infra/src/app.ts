@@ -13,11 +13,10 @@ const config = loadEnvConfig();
 
 const env = { region: config.region };
 
-// 配信ドメイン確定前の暫定。実際の許可オリジンは DeliveryStack 構築後に SSM/コンテキストで差し込む。
-const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? 'https://localhost')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean);
+// アプリの公開オリジン（CloudFrontドメイン）。初回デプロイ後に APP_ORIGIN で指定して再デプロイする。
+// 例: APP_ORIGIN=https://d3gshsyo8qdxa8.cloudfront.net
+const appOrigin = process.env.APP_ORIGIN ?? '';
+const allowedOrigins = appOrigin ? [appOrigin] : ['https://localhost'];
 
 const storage = new StorageStack(app, `PhotoAlbum-Storage-${config.envName}`, {
   env,
@@ -37,6 +36,9 @@ const authApi = new AuthApiStack(app, `PhotoAlbum-AuthApi-${config.envName}`, {
   config,
   metaBucket: storage.metaBucket,
   mediaBucket: storage.mediaBucket,
+  ...(appOrigin
+    ? { allowedOrigin: appOrigin, lineCallbackUrl: `${appOrigin}/api/auth/line/callback` }
+    : {}),
 });
 
 new DeliveryStack(app, `PhotoAlbum-Delivery-${config.envName}`, {

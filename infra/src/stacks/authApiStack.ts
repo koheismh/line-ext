@@ -26,6 +26,10 @@ export interface AuthApiStackProps extends StackProps {
   mediaBucket: IBucket;
   /** 削除キューURL。削除202後に投入する。 */
   deletionQueueUrl?: string;
+  /** アプリの公開オリジン（CloudFrontドメイン）。CSRF/CORS/リダイレクト基点。 */
+  allowedOrigin?: string;
+  /** LINE コールバックURL。 */
+  lineCallbackUrl?: string;
 }
 
 export class AuthApiStack extends Stack {
@@ -57,8 +61,8 @@ export class AuthApiStack extends Stack {
         COOKIE_SECRET_PARAM: cookieSecretParam,
         LINE_CHANNEL_ID_PARAM: lineChannelIdParam,
         LINE_CHANNEL_SECRET_PARAM: lineChannelSecretParam,
-        LINE_CALLBACK_URL: '', // ドメイン確定後に設定
-        ALLOWED_ORIGIN: '', // 同上
+        LINE_CALLBACK_URL: props.lineCallbackUrl ?? '',
+        ALLOWED_ORIGIN: props.allowedOrigin ?? '',
         ...(props.deletionQueueUrl
           ? { DELETION_QUEUE_URL: props.deletionQueueUrl }
           : {}),
@@ -103,7 +107,7 @@ export class AuthApiStack extends Stack {
           HttpMethod.DELETE,
           HttpMethod.OPTIONS,
         ] as unknown as CorsHttpMethod[],
-        allowOrigins: ['https://localhost'], // DeliveryStack 確定後に更新
+        allowOrigins: [props.allowedOrigin ?? 'https://localhost'],
         allowCredentials: true,
       },
     });
