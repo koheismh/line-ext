@@ -1,16 +1,26 @@
 // アップロードを統括するフック。タスク15のロジックを結線する。
 //  容量判定 → 回線ガード → 単一/マルチパート分岐 → 完了 or 保留記録
+//  ファイルごとの成否を返し（要件4-23）、完了したファイルの保留記録を消す（要件9-6）。
+//  送信中は離脱確認と画面スリープ抑止を行う（要件4-25）。
 // UIは戻り値の状態と関数を使う。
 
-import { useState, useCallback } from 'react';
-import { MAX_PHOTO_BYTES } from '@photo-album/shared';
-import { api } from '../../services/api.js';
+import { useState, useCallback, useEffect } from 'react';
+import { MULTIPART_THRESHOLD_BYTES } from '@photo-album/shared';
+import { api, errorMessage } from '../../services/api.js';
 import { classifyConnection, decideUpload, isGuardSuppressed, suppressGuard } from './networkGuard.js';
 import { sumSizes } from './size.js';
 import { computePartCount, uploadParts, PART_SIZE } from './multipartUploader.js';
-import { addPending, type PendingUpload } from './pendingStore.js';
+import { addPending, clearPendingFor, type PendingUpload } from './pendingStore.js';
 
-export type UploadPhase = 'idle' | 'confirm' | 'uploading' | 'done' | 'error';
+export type UploadPhase = 'idle' | 'confirm' | 'uploading' | 'done';
+
+/** ファイルごとの結果。 */
+export interface FileResult {
+  name: string;
+  ok: boolean;
+  /** 失敗時の利用者向け説明 */
+  message?: string;
+}
 
 export interface UploadState {
   phase: UploadPhase;
@@ -18,35 +28,75 @@ export interface UploadState {
   reason?: 'cellular' | 'unknown';
   /** 進捗 0〜1 */
   progress: number;
-  error?: string;
+  /** 直近のアップロードのファイルごとの結果 */
+  results: FileResult[];
 }
 
-/** 1ファイルが大容量(マルチパート対象)か。単体50MB以上 or 動画。 */
+/** 1ファイルが大容量(マルチパート対象)か。単体50MB以上 or 動画（要件4-11）。 */
 function needsMultipart(file: File): boolean {
-  return file.size >= MAX_PHOTO_BYTES || file.type.startsWith('video/');
+  return file.size >= MULTIPART_THRESHOLD_BYTES || file.type.startsWith('video/');
+}
+
+/** 送信中の離脱確認と画面スリープ抑止（可能な環境のみ）。 */
+function useUploadingGuards(active: boolean) {
+  useEffect(() => {
+    if (!active) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+
+    let lock: WakeLockSentinel | null = null;
+    let released = false;
+    if ('wakeLock' in navigator) {
+      navigator.wakeLock
+        .request('screen')
+        .then((l) => {
+          if (released) void l.release();
+          else lock = l;
+        })
+        .catch(() => {
+          // 省電力モード等で取得できない場合は何もしない
+        });
+    }
+    return () => {
+      released = true;
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      void lock?.release();
+    };
+  }, [active]);
 }
 
 export function useUpload(albumId: string) {
-  const [state, setState] = useState<UploadState>({ phase: 'idle', progress: 0 });
+  const [state, setState] = useState<UploadState>({ phase: 'idle', progress: 0, results: [] });
   const [queued, setQueued] = useState<File[]>([]);
 
-  /** 実アップロード（ガード通過後）。 */
+  useUploadingGuards(state.phase === 'uploading');
+
+  /** 実アップロード（ガード通過後）。1件失敗しても残りは続ける。 */
   const runUpload = useCallback(
     async (files: File[]) => {
-      setState({ phase: 'uploading', progress: 0 });
-      try {
-        let doneCount = 0;
-        for (const file of files) {
+      const results: FileResult[] = [];
+      setState({ phase: 'uploading', progress: 0, results: [] });
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i]!;
+        try {
           await uploadOne(albumId, file, (p) => {
-            const overall = (doneCount + p) / files.length;
-            setState({ phase: 'uploading', progress: overall });
+            setState({ phase: 'uploading', progress: (i + p) / files.length, results: [...results] });
           });
-          doneCount++;
+          results.push({ name: file.name, ok: true });
+          await clearPendingFor(albumId, file);
+        } catch (err) {
+          results.push({
+            name: file.name,
+            ok: false,
+            message: errorMessage(err, err instanceof Error ? err.message : 'アップロードに失敗しました。'),
+          });
         }
-        setState({ phase: 'done', progress: 1 });
-      } catch (err) {
-        setState({ phase: 'error', progress: 0, error: (err as Error).message });
+        setState({ phase: 'uploading', progress: (i + 1) / files.length, results: [...results] });
       }
+      setState({ phase: 'done', progress: 1, results: [...results] });
     },
     [albumId],
   );
@@ -66,7 +116,7 @@ export function useUpload(albumId: string) {
         await runUpload(files);
       } else {
         setQueued(files);
-        setState({ phase: 'confirm', progress: 0, reason: decision.reason });
+        setState({ phase: 'confirm', progress: 0, results: [], reason: decision.reason });
       }
     },
     [runUpload],
@@ -75,11 +125,12 @@ export function useUpload(albumId: string) {
   /** confirm に対する「それでもアップロード」。24時間抑制して実行。 */
   const approve = useCallback(async () => {
     suppressGuard();
-    await runUpload(queued);
+    const files = queued;
     setQueued([]);
+    await runUpload(files);
   }, [queued, runUpload]);
 
-  /** confirm に対する「保留にする」。IndexedDB に記録してキャンセル。 */
+  /** confirm に対する「保留にする」。IndexedDB に記録してキャンセル（サーバAPIは呼ばない, 要件9-3）。 */
   const defer = useCallback(async () => {
     const reason = state.reason ?? 'unknown';
     for (const file of queued) {
@@ -96,7 +147,7 @@ export function useUpload(albumId: string) {
       await addPending(item);
     }
     setQueued([]);
-    setState({ phase: 'idle', progress: 0 });
+    setState({ phase: 'idle', progress: 0, results: [] });
   }, [albumId, queued, state.reason]);
 
   return { state, start, approve, defer };
@@ -120,7 +171,7 @@ async function uploadOne(
     const res = await fetch(uploadUrl, {
       method: 'PUT',
       body: file,
-      headers: { 'content-type': file.type },
+      headers: { 'content-type': file.type }, // 署名に含めた Content-Type と一致させる
     });
     if (!res.ok) throw new Error(`アップロードに失敗しました (${res.status})`);
     onProgress(1);
@@ -130,9 +181,9 @@ async function uploadOne(
   // マルチパート
   const partCount = computePartCount(file.size, PART_SIZE);
   const init = await api.uploads.initMultipart(albumId, { ...common, partCount });
-  const parts = await uploadParts(file, init.partUrls, {
+  await uploadParts(file, init.partUrls, {
     reissue: (partNumbers) => api.uploads.reissueParts(init.mediaId, init.uploadId, partNumbers),
     onProgress: (done, total) => onProgress(done / total),
   });
-  await api.uploads.complete(init.mediaId, init.uploadId, parts);
+  await api.uploads.complete(init.mediaId, init.uploadId);
 }

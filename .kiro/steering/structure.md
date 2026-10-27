@@ -6,7 +6,7 @@
 - 配信系（CloudFront + OAC、`/api/*` ルーティング）
 - API/認証系（API Gateway HTTP API、Lambda、権限）
 - 処理系（サムネイル生成Lambda、S3イベント連携）
-スタック間の参照は循環しないよう、下位（ストレージ）→上位（配信・API）の一方向にする。
+スタック間の参照は循環しないよう、下位（ストレージ）→上位（配信・API）の一方向にする。現状は `Storage → Processing → AuthApi → Delivery`（API は処理系の削除キューへ投入する）。
 
 ## S3レイアウト
 
@@ -17,6 +17,7 @@ identities/line/{sha256OfLineSub}.json
 user-groups/{userId}/{groupId}.json        # 検索用。認可判定の正本ではない
 groups/{groupId}.json                       # メンバーIDが正本
 invites/{sha256OfInviteToken}.json
+group-invites/{groupId}/{inviteId}.json     # 検索用（有効招待の一覧・失効用）。正本は invites/
 albums/{ownerType}/{ownerId}/{albumId}.json
 media/{albumId}/{mediaId}.json
 comments/{targetType}/{targetId}/{rootCommentId}/{commentId}.json
@@ -50,15 +51,16 @@ assets/*
 
 ## API境界（HTTPパス案）
 ```
-GET    /api/me
+GET    /api/me                                  # userId・表示名。セッションCookieを延長する
 GET    /api/auth/line/start                     # 戻り先(同一オリジン相対)を保持
 GET    /api/auth/line/callback
-POST   /api/auth/logout                         # sessionVersion をインクリメントし全Cookie無効化
-GET    /api/groups
+POST   /api/auth/logout                         # sessionVersion をインクリメントし全Cookie無効化（Origin検証あり）
+GET    /api/groups                              # 所属グループ一覧（user-groups → 正本照合）
 POST   /api/groups                              # name 必須
 GET    /api/groups/{groupId}                    # グループ詳細（メンバー表示名一覧を含む）
 POST   /api/groups/{groupId}/invites            # 管理者のみ
-POST   /api/invites/{inviteId}/revoke           # 招待失効（管理者のみ）
+GET    /api/groups/{groupId}/invites            # 有効な招待の一覧（管理者のみ・トークン平文は返さない）
+POST   /api/invites/{inviteId}/revoke           # 招待失効（管理者のみ）。グループは招待の正本から解決
 POST   /api/invites/accept                      # 明示操作で参加
 GET    /api/albums                              # 権限のある所有主体のみ。所有主体はクエリ省略可(locatorで解決)
 POST   /api/albums
@@ -70,7 +72,8 @@ POST   /api/albums/{albumId}/media/uploads/multipart # マルチパート開始 
 POST   /api/media/{mediaId}/uploads/{uploadId}/parts # パート署名URLの再発行（期限切れ対策）
 POST   /api/media/{mediaId}/uploads/{uploadId}/complete # ListParts検証 → CompleteMultipartUpload
 GET    /api/media/{mediaId}/url?kind=preview|original|video|download # 用途別に期限が異なる
-DELETE /api/media/{mediaId}                     # deleting にして 202、削除は非同期ワーカー
+POST   /api/media/{mediaId}/reprocess           # error(preview_failed) の再処理（投稿者のみ）。202
+DELETE /api/media/{mediaId}                     # deleting にして 202、削除は非同期ワーカー（SQS）
 GET    /api/comments?targetType=album|media&targetId=... # root単位ページング
 POST   /api/comments
 DELETE /api/comments/{commentId}

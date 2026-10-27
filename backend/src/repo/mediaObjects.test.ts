@@ -13,11 +13,18 @@ import {
   copyObject,
   deleteObject,
   sumUploadedParts,
+  listUploadedParts,
   getReadSignedUrl,
+  getUploadSignedUrl,
   clearSignedUrlCache,
+  contentDispositionAttachment,
 } from './mediaObjects.js';
 
 const s3mock = mockClient(s3);
+
+// 署名付きURL生成にはダミー資格情報が必要
+process.env.AWS_ACCESS_KEY_ID ??= 'test';
+process.env.AWS_SECRET_ACCESS_KEY ??= 'test';
 
 beforeEach(() => {
   s3mock.reset();
@@ -69,7 +76,10 @@ describe('copyObject / deleteObject', () => {
 describe('sumUploadedParts', () => {
   it('全パートのサイズを合計する', async () => {
     s3mock.on(ListPartsCommand).resolves({
-      Parts: [{ Size: 100 }, { Size: 200 }],
+      Parts: [
+        { PartNumber: 1, ETag: '"a"', Size: 100 },
+        { PartNumber: 2, ETag: '"b"', Size: 200 },
+      ],
       IsTruncated: false,
     });
     expect(await sumUploadedParts('b', 'k', 'up')).toBe(300);
@@ -77,9 +87,56 @@ describe('sumUploadedParts', () => {
   it('ページングを辿る', async () => {
     s3mock
       .on(ListPartsCommand)
-      .resolvesOnce({ Parts: [{ Size: 100 }], IsTruncated: true, NextPartNumberMarker: '1' })
-      .resolvesOnce({ Parts: [{ Size: 50 }], IsTruncated: false });
+      .resolvesOnce({
+        Parts: [{ PartNumber: 1, ETag: '"a"', Size: 100 }],
+        IsTruncated: true,
+        NextPartNumberMarker: '1',
+      })
+      .resolvesOnce({ Parts: [{ PartNumber: 2, ETag: '"b"', Size: 50 }], IsTruncated: false });
     expect(await sumUploadedParts('b', 'k', 'up')).toBe(150);
+  });
+});
+
+describe('listUploadedParts', () => {
+  it('パート番号順に ETag とサイズを返す（ページング対応）', async () => {
+    s3mock
+      .on(ListPartsCommand)
+      .resolvesOnce({
+        Parts: [{ PartNumber: 2, ETag: '"b"', Size: 5 }],
+        IsTruncated: true,
+        NextPartNumberMarker: '2',
+      })
+      .resolvesOnce({ Parts: [{ PartNumber: 1, ETag: '"a"', Size: 7 }], IsTruncated: false });
+    expect(await listUploadedParts('b', 'k', 'up')).toEqual([
+      { partNumber: 1, etag: '"a"', size: 7 },
+      { partNumber: 2, etag: '"b"', size: 5 },
+    ]);
+  });
+});
+
+describe('getUploadSignedUrl', () => {
+  it('Content-Type と Content-Length を署名し、チェックサムのクエリを含めない', async () => {
+    const url = new URL(
+      await getUploadSignedUrl({
+        bucket: 'b',
+        key: 'originals/a/m/source.jpg',
+        contentType: 'image/jpeg',
+        contentLength: 1234,
+        expiresIn: 900,
+      }),
+    );
+    const signed = url.searchParams.get('X-Amz-SignedHeaders') ?? '';
+    expect(signed.split(';')).toEqual(expect.arrayContaining(['content-type', 'content-length', 'host']));
+    expect([...url.searchParams.keys()].filter((k) => k.toLowerCase().includes('checksum'))).toEqual([]);
+  });
+});
+
+describe('contentDispositionAttachment', () => {
+  it('日本語ファイル名を RFC 5987 形式でエンコードする', () => {
+    expect(contentDispositionAttachment('旅行 (1).jpg')).toBe(
+      "attachment; filename*=UTF-8''%E6%97%85%E8%A1%8C%20%281%29.jpg",
+    );
+    expect(contentDispositionAttachment()).toBe('attachment');
   });
 });
 

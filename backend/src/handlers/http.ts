@@ -3,6 +3,7 @@
 
 import type { ApiError } from '@photo-album/shared';
 import { AppError } from '../app/errors.js';
+import { AlreadyExistsError, ConflictError, NotFoundError } from '../repo/errors.js';
 
 export interface HttpResponse {
   statusCode: number;
@@ -43,15 +44,35 @@ export function redirect(location: string, cookies?: string[]): HttpResponse {
   };
 }
 
-/** エラーを HTTP レスポンスに変換する。想定外は 500（詳細は漏らさない）。 */
+function errorBody(statusCode: number, body: ApiError): HttpResponse {
+  return { statusCode, headers: JSON_HEADERS, body: JSON.stringify(body) };
+}
+
+/** エラーを HTTP レスポンスに変換する。想定外は 500（詳細は漏らさず、ログにのみ残す）。 */
 export function errorToResponse(err: unknown): HttpResponse {
   if (err instanceof AppError) {
-    const body: ApiError = { code: err.code, message: err.message };
-    return { statusCode: err.status, headers: JSON_HEADERS, body: JSON.stringify(body) };
+    return errorBody(err.status, { code: err.code, message: err.message });
   }
-  // 想定外: 詳細をクライアントに出さない
-  const body: ApiError = { code: 'internal_error', message: 'サーバ内部エラーが発生しました。' };
-  return { statusCode: 500, headers: JSON_HEADERS, body: JSON.stringify(body) };
+  // repo層の例外（ETag競合など）は機械可読なコードで返す（design: 競合は409でリトライ可能に）
+  if (err instanceof ConflictError) {
+    return errorBody(409, {
+      code: 'conflict',
+      message: '他の操作と競合しました。画面を更新してからもう一度お試しください。',
+    });
+  }
+  if (err instanceof AlreadyExistsError) {
+    return errorBody(409, { code: 'already_exists', message: '既に存在します。' });
+  }
+  if (err instanceof NotFoundError) {
+    return errorBody(404, { code: 'not_found', message: '対象が見つかりません。' });
+  }
+  // 想定外: 詳細をクライアントに出さない（秘密情報を含まないエラー名・メッセージのみ記録）
+  console.error('[api] unexpected error', {
+    name: (err as Error)?.name,
+    message: (err as Error)?.message,
+    stack: (err as Error)?.stack,
+  });
+  return errorBody(500, { code: 'internal_error', message: 'サーバ内部エラーが発生しました。' });
 }
 
 /** ハンドラを実行し、例外を安全にレスポンスへ変換するラッパ。 */

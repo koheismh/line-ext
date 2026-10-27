@@ -4,9 +4,11 @@
 //  - trash/ は参照対象にしない
 
 import {
+  isSignedUrlKind,
   type Media,
   type SignedUrlKind,
   type MediaListItem,
+  type MediaPage,
 } from '@photo-album/shared';
 import {
   getJson,
@@ -22,10 +24,7 @@ import { authorizeAlbumView, authorizeMediaView } from './authorize.js';
 
 const DEFAULT_PAGE_SIZE = 60;
 
-export interface MediaPage {
-  items: MediaListItem[];
-  nextToken?: string;
-}
+export type { MediaPage };
 
 /**
  * アルバムのメディア一覧。
@@ -66,7 +65,12 @@ export async function listAlbumMedia(
       mediaId: media.mediaId,
       albumId: media.albumId,
       kind: media.kind,
+      status: media.status,
+      errorReason: media.status === 'error' ? media.errorReason : null,
       previewUrl,
+      displayFileName: media.displayFileName,
+      videoCodec: media.videoCodec,
+      createdBy: media.createdBy,
       createdAt: media.createdAt,
     });
   }
@@ -96,6 +100,9 @@ export async function getMediaUrl(
   userId: string,
   kind: SignedUrlKind,
 ): Promise<string> {
+  if (!isSignedUrlKind(kind)) {
+    throw new AppError(422, 'invalid_kind', 'kind は preview / original / video / download のいずれかです。');
+  }
   const access = await authorizeMediaView(ctx, mediaId, userId);
   const media = access.media.value;
 

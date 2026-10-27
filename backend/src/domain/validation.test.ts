@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   validateUploadDeclaration,
+  validateText,
   isLargeUpload,
   mediaKindFromMime,
 } from './validation.js';
@@ -58,6 +59,28 @@ describe('validateUploadDeclaration', () => {
   it('サイズ0や負数を拒否', () => {
     expect(validateUploadDeclaration({ declaredMimeType: 'image/jpeg', declaredByteSize: 0 }).ok).toBe(false);
     expect(validateUploadDeclaration({ declaredMimeType: 'image/jpeg', declaredByteSize: -1 }).ok).toBe(false);
+  });
+});
+
+describe('validateText', () => {
+  const rule = { label: '本文', max: 5 };
+  it('文字列・長さ内・制御文字なしなら ok（値は加工しない）', () => {
+    expect(validateText(' ab ', rule)).toEqual({ ok: true, value: ' ab ' });
+  });
+  it('空白のみ・長すぎ・文字列以外は拒否', () => {
+    expect(validateText('  ', rule).ok).toBe(false);
+    expect(validateText('123456', rule).ok).toBe(false);
+    expect(validateText(1, rule).ok).toBe(false);
+    expect(validateText(undefined, rule).ok).toBe(false);
+  });
+  it('allowEmpty なら空文字を許可', () => {
+    expect(validateText('', { ...rule, allowEmpty: true }).ok).toBe(true);
+  });
+  it('改行は multiline のときだけ許可、その他の制御文字は常に拒否', () => {
+    expect(validateText('a\nb', rule).ok).toBe(false);
+    expect(validateText('a\nb', { ...rule, multiline: true }).ok).toBe(true);
+    expect(validateText('a\u0007b', { ...rule, multiline: true }).ok).toBe(false);
+    expect(validateText('a\u007fb', { ...rule, multiline: true }).ok).toBe(false);
   });
 });
 

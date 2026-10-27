@@ -1,19 +1,24 @@
 // APIルーター（handler層）。API Gateway HTTP API v2 の単一Lambdaで全ルートを捌く。
 // メソッド＋パスでユースケースへディスパッチし、認証・CSRF・エラー変換を一元化する。
+// ルート一覧は structure.md「API境界」に準拠。
 
 import type {
   APIGatewayProxyEventV2,
   APIGatewayProxyStructuredResultV2,
 } from 'aws-lambda';
-import { requireUser, type RequestMeta } from './authMiddleware.js';
+import type { MeResponse, SignedUrlKind } from '@photo-album/shared';
+import { authenticate, requireUser, type RequestMeta } from './authMiddleware.js';
 import { handleLineStart, handleLineCallback, handleLogout } from './authFlow.js';
 import { handle, ok, noContent, type HttpResponse } from './http.js';
 import { loadRuntimeConfig, type RuntimeConfig } from './runtimeConfig.js';
+import { enqueueDeletion } from './jobs.js';
+import { buildSessionCookie } from '../auth/cookie.js';
 import * as groups from '../app/groups.js';
 import * as albums from '../app/albums.js';
 import * as uploads from '../app/uploads.js';
 import * as mediaQuery from '../app/mediaQuery.js';
 import * as deletion from '../app/deletion.js';
+import * as processing from '../app/processing.js';
 import * as comments from '../app/comments.js';
 import { AppError } from '../app/errors.js';
 
@@ -27,16 +32,22 @@ function reqMeta(event: APIGatewayProxyEventV2): RequestMeta {
   };
 }
 
-function parseBody<T>(event: APIGatewayProxyEventV2): T {
-  if (!event.body) return {} as T;
+/** JSONボディを読む。オブジェクト以外は 422（各項目の検証はユースケース側で行う）。 */
+function parseBody<T>(event: APIGatewayProxyEventV2): Partial<T> {
+  if (!event.body) return {};
   const raw = event.isBase64Encoded
     ? Buffer.from(event.body, 'base64').toString('utf8')
     : event.body;
+  let parsed: unknown;
   try {
-    return JSON.parse(raw) as T;
+    parsed = JSON.parse(raw);
   } catch {
     throw new AppError(422, 'invalid_json', 'リクエストボディが不正です。');
   }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new AppError(422, 'invalid_json', 'リクエストボディが不正です。');
+  }
+  return parsed as Partial<T>;
 }
 
 function nowIso(): string {
@@ -69,16 +80,21 @@ export async function route(
       return handleLineCallback(event, cfg);
     }
     if (method === 'POST' && path === '/api/auth/logout') {
-      return handleLogout(event, cfg);
+      return handleLogout(event, cfg, meta);
     }
 
-    // --- /api/me ---
+    // --- /api/me（Cookieを延長して実質無期限にする） ---
     if (method === 'GET' && path === '/api/me') {
-      const userId = await auth();
-      return ok({ userId });
+      const session = await authenticate(app, meta, cfg.secrets.cookieSecret, cfg.allowedOrigin);
+      const body: MeResponse = { userId: session.userId, displayName: session.user.displayName };
+      return ok(body, { cookies: [buildSessionCookie(session.token)] });
     }
 
     // --- groups ---
+    if (method === 'GET' && path === '/api/groups') {
+      const userId = await auth();
+      return ok({ groups: await groups.listGroups(app, userId) });
+    }
     if (method === 'POST' && path === '/api/groups') {
       const userId = await auth();
       const body = parseBody<{ name: string }>(event);
@@ -97,11 +113,14 @@ export async function route(
         statusCode: 201,
       });
     }
+    if (method === 'GET' && groupInvites) {
+      const userId = await auth();
+      return ok({ invites: await groups.listInvites(app, groupInvites[1]!, userId, Date.now()) });
+    }
     const inviteRevoke = path.match(/^\/api\/invites\/([^/]+)\/revoke$/);
     if (method === 'POST' && inviteRevoke) {
       const userId = await auth();
-      const body = parseBody<{ groupId: string }>(event);
-      await groups.revokeInvite(app, body.groupId, inviteRevoke[1]!, userId, nowIso());
+      await groups.revokeInvite(app, inviteRevoke[1]!, userId, nowIso());
       return noContent();
     }
     if (method === 'POST' && path === '/api/invites/accept') {
@@ -123,7 +142,20 @@ export async function route(
         title: string;
         description?: string;
       }>(event);
-      return ok(await albums.createAlbum(app, userId, body, nowIso()), { statusCode: 201 });
+      return ok(
+        await albums.createAlbum(
+          app,
+          userId,
+          {
+            ownerType: body.ownerType as 'user' | 'group',
+            ownerId: body.ownerId as string,
+            title: body.title as string,
+            ...(body.description !== undefined ? { description: body.description } : {}),
+          },
+          nowIso(),
+        ),
+        { statusCode: 201 },
+      );
     }
     const albumOne = path.match(/^\/api\/albums\/([^/]+)$/);
     if (method === 'GET' && albumOne) {
@@ -152,7 +184,7 @@ export async function route(
       const body = parseBody<Omit<uploads.InitUploadParams, 'albumId' | 'userId' | 'now'>>(event);
       return ok(
         await uploads.initSingleUpload(app, {
-          ...body,
+          ...(body as Omit<uploads.InitUploadParams, 'albumId' | 'userId' | 'now'>),
           albumId: albumUploads[1]!,
           userId,
           now: nowIso(),
@@ -162,9 +194,8 @@ export async function route(
     const albumMultipart = path.match(/^\/api\/albums\/([^/]+)\/media\/uploads\/multipart$/);
     if (method === 'POST' && albumMultipart) {
       const userId = await auth();
-      const body = parseBody<
-        Omit<uploads.InitUploadParams, 'albumId' | 'userId' | 'now'> & { partCount: number }
-      >(event);
+      type Body = Omit<uploads.InitUploadParams, 'albumId' | 'userId' | 'now'> & { partCount: number };
+      const body = parseBody<Body>(event) as Body;
       return ok(
         await uploads.initMultipartUpload(app, {
           ...body,
@@ -185,19 +216,18 @@ export async function route(
           mediaId: mediaParts[1]!,
           uploadId: mediaParts[2]!,
           userId,
-          partNumbers: body.partNumbers,
+          partNumbers: body.partNumbers ?? [],
         }),
       );
     }
     const mediaComplete = path.match(/^\/api\/media\/([^/]+)\/uploads\/([^/]+)\/complete$/);
     if (method === 'POST' && mediaComplete) {
       const userId = await auth();
-      const body = parseBody<{ parts: { partNumber: number; etag: string }[] }>(event);
+      // クライアント申告のパート情報は使わない（サーバが ListParts で取得・検証する）
       await uploads.completeUpload(app, {
         mediaId: mediaComplete[1]!,
         uploadId: mediaComplete[2]!,
         userId,
-        parts: body.parts,
         now: nowIso(),
       });
       return noContent();
@@ -205,14 +235,21 @@ export async function route(
     const mediaUrl = path.match(/^\/api\/media\/([^/]+)\/url$/);
     if (method === 'GET' && mediaUrl) {
       const userId = await auth();
-      const kind = (q.kind ?? 'preview') as 'preview' | 'original' | 'video' | 'download';
+      const kind = (q.kind ?? 'preview') as SignedUrlKind; // 値の検証は getMediaUrl で行う
       return ok({ url: await mediaQuery.getMediaUrl(app, mediaUrl[1]!, userId, kind) });
+    }
+    const mediaReprocess = path.match(/^\/api\/media\/([^/]+)\/reprocess$/);
+    if (method === 'POST' && mediaReprocess) {
+      const userId = await auth();
+      await processing.requestReprocess(app, mediaReprocess[1]!, userId);
+      return noContent(202);
     }
     const mediaOne = path.match(/^\/api\/media\/([^/]+)$/);
     if (method === 'DELETE' && mediaOne) {
       const userId = await auth();
       const job = await deletion.startDelete(app, mediaOne[1]!, userId, new Date());
-      // 実際のSQS投入はこの後（インフラ結線）。ここでは受理を202で返す。
+      // コピー以降は SQS 経由の削除ワーカーで非同期に行う（投入失敗時は定期掃除が再投入）
+      await enqueueDeletion(cfg.deletionQueueUrl, job);
       return ok(job, { statusCode: 202 });
     }
 
@@ -224,11 +261,15 @@ export async function route(
       if (!targetType || !targetId) {
         throw new AppError(422, 'invalid_query', 'targetType と targetId は必須です。');
       }
-      return ok({ threads: await comments.listComments(app, targetType, targetId, userId) });
+      return ok(
+        await comments.listComments(app, targetType, targetId, userId, {
+          ...(q.pageToken ? { pageToken: q.pageToken } : {}),
+        }),
+      );
     }
     if (method === 'POST' && path === '/api/comments') {
       const userId = await auth();
-      const body = parseBody<comments.PostCommentInput>(event);
+      const body = parseBody<comments.PostCommentInput>(event) as comments.PostCommentInput;
       return ok(await comments.postComment(app, userId, body, nowIso()), { statusCode: 201 });
     }
     const commentOne = path.match(/^\/api\/comments\/([^/]+)$/);
@@ -256,5 +297,3 @@ export async function handler(
     ...(res.cookies ? { cookies: res.cookies } : {}),
   };
 }
-
-

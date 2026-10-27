@@ -70,10 +70,33 @@ export async function removePending(id: string): Promise<void> {
  * 選び直されたファイルが保留と同一か照合する。
  * 名前・サイズ・更新日時で判定（メモ型のため本体は保持していない）。
  */
-export function matchesPending(pending: PendingUpload, file: File): boolean {
+export function matchesPending(pending: PendingUpload, file: Pick<File, 'name' | 'size' | 'lastModified'>): boolean {
   return (
     pending.fileName === file.name &&
     pending.byteSize === file.size &&
     pending.lastModified === file.lastModified
   );
+}
+
+/** 保留一覧から、指定アルバムでこのファイルに一致するものを返す（純粋関数）。 */
+export function findMatchingPending(
+  pendings: PendingUpload[],
+  albumId: string,
+  file: Pick<File, 'name' | 'size' | 'lastModified'>,
+): PendingUpload[] {
+  return pendings.filter((p) => p.albumId === albumId && matchesPending(p, file));
+}
+
+/**
+ * アップロード完了したファイルに一致する保留記録を消す（要件9-6）。
+ * IndexedDB が使えない環境でもアップロード自体は成功扱いにするため、失敗は握りつぶす。
+ */
+export async function clearPendingFor(albumId: string, file: File): Promise<number> {
+  try {
+    const matched = findMatchingPending(await listPending(), albumId, file);
+    for (const p of matched) await removePending(p.id);
+    return matched.length;
+  } catch {
+    return 0;
+  }
 }

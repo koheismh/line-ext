@@ -1,8 +1,9 @@
 // 認証フローのHTTPハンドラ（handler層）。requirements 要件1。
 //  GET  /api/auth/line/start    : state/nonce/PKCE生成 → 一時署名Cookie保存 → LINE認可URLへ302
 //  GET  /api/auth/line/callback : state照合 → コード交換 → IDトークン検証 → ユーザーupsert → セッションCookie発行 → 戻り先へ302
-//  POST /api/auth/logout        : sessionVersion++ → Cookieクリア
+//  POST /api/auth/logout        : Origin検証 → sessionVersion++ → Cookieクリア
 
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { APIGatewayProxyEventV2 } from 'aws-lambda';
 import { generateState, generateNonce, generatePkce } from '../auth/pkce.js';
 import { signSession, verifySession } from '../auth/session.js';
@@ -16,6 +17,7 @@ import {
   bumpSessionVersion,
 } from '../app/auth.js';
 import type { RuntimeConfig } from './runtimeConfig.js';
+import { assertSameOrigin, type RequestMeta } from './authMiddleware.js';
 import { ok, redirect, type HttpResponse } from './http.js';
 
 const LINE_AUTHORIZE_URL = 'https://access.line.me/oauth2/v2.1/authorize';
@@ -27,12 +29,9 @@ interface OauthTx {
   nonce: string;
   codeVerifier: string;
   returnTo: string;
-  // signSession は { userId, sessionVersion } 型なので汎用署名を別に用意する
 }
 
-/** 汎用の署名付きCookieはsignSessionを流用せず、JSONをHMAC署名する簡易実装にする。 */
-import { createHmac, timingSafeEqual } from 'node:crypto';
-
+// 汎用の署名付きCookie（signSession は { userId, sessionVersion } 専用のため別実装）。
 function signTx(tx: OauthTx, secret: string): string {
   const body = Buffer.from(JSON.stringify(tx), 'utf8').toString('base64url');
   const sig = createHmac('sha256', secret).update(body).digest('base64url');
@@ -48,7 +47,16 @@ function verifyTx(token: string, secret: string): OauthTx | null {
   const b = Buffer.from(expected);
   if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
   try {
-    return JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as OauthTx;
+    const parsed = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as Partial<OauthTx>;
+    if (
+      typeof parsed.state !== 'string' ||
+      typeof parsed.nonce !== 'string' ||
+      typeof parsed.codeVerifier !== 'string' ||
+      typeof parsed.returnTo !== 'string'
+    ) {
+      return null;
+    }
+    return parsed as OauthTx;
   } catch {
     return null;
   }
@@ -68,6 +76,16 @@ function readCookie(event: APIGatewayProxyEventV2, name: string): string | null 
     if (idx > 0 && c.slice(0, idx).trim() === name) return c.slice(idx + 1);
   }
   return null;
+}
+
+/**
+ * ログイン失敗・キャンセル時のリダイレクト（要件1-10）。
+ * 画面側は login_error を見て利用者向けの説明と再試行導線を出す。戻り先が分かれば維持する。
+ */
+function loginErrorRedirect(cfg: RuntimeConfig, returnTo = '/'): HttpResponse {
+  const path = safeReturnPath(returnTo);
+  const sep = path.includes('?') ? '&' : '?';
+  return redirect(`${cfg.allowedOrigin}${path}${sep}login_error=1`, [clearTxCookie()]);
 }
 
 /** GET /api/auth/line/start */
@@ -100,15 +118,15 @@ export async function handleLineCallback(
   cfg: RuntimeConfig,
 ): Promise<HttpResponse> {
   const q = event.queryStringParameters ?? {};
+  const txToken = readCookie(event, TX_COOKIE);
+  const tx = txToken ? verifyTx(txToken, cfg.secrets.cookieSecret) : null;
 
   // ユーザーがキャンセル/エラーの場合
   if (q.error) {
     console.warn('[auth/callback] line returned error', { error: q.error });
-    return redirect(`${cfg.allowedOrigin}/?login_error=1`, [clearTxCookie()]);
+    return loginErrorRedirect(cfg, tx?.returnTo);
   }
 
-  const txToken = readCookie(event, TX_COOKIE);
-  const tx = txToken ? verifyTx(txToken, cfg.secrets.cookieSecret) : null;
   if (!tx || !q.code || !q.state || q.state !== tx.state) {
     console.warn('[auth/callback] tx/state check failed', {
       hasTxCookie: !!txToken,
@@ -118,7 +136,7 @@ export async function handleLineCallback(
       stateMatch: !!tx && q.state === tx.state,
       cookieCount: (event.cookies ?? []).length,
     });
-    return redirect(`${cfg.allowedOrigin}/?login_error=1`, [clearTxCookie()]);
+    return loginErrorRedirect(cfg, tx?.returnTo);
   }
 
   // コード交換
@@ -137,7 +155,7 @@ export async function handleLineCallback(
       message: (err as Error).message,
       redirectUri: cfg.lineCallbackUrl,
     });
-    return redirect(`${cfg.allowedOrigin}/?login_error=1`, [clearTxCookie()]);
+    return loginErrorRedirect(cfg, tx.returnTo);
   }
 
   // IDトークン検証
@@ -149,7 +167,7 @@ export async function handleLineCallback(
   });
   if (!verified.ok) {
     console.error('[auth/callback] id token verify failed', { reason: verified.reason });
-    return redirect(`${cfg.allowedOrigin}/?login_error=1`, [clearTxCookie()]);
+    return loginErrorRedirect(cfg, tx.returnTo);
   }
 
   // ユーザーupsert → セッションCookie発行
@@ -159,18 +177,20 @@ export async function handleLineCallback(
   const sessionVersion = await getSessionVersion(cfg.app, userId);
   const sessionToken = signSession({ userId, sessionVersion }, cfg.secrets.cookieSecret);
 
-  return redirect(`${cfg.allowedOrigin}${tx.returnTo}`, [
+  return redirect(`${cfg.allowedOrigin}${safeReturnPath(tx.returnTo)}`, [
     clearTxCookie(),
     buildSessionCookie(sessionToken),
   ]);
 }
 
-/** POST /api/auth/logout */
+/** POST /api/auth/logout（変更系のため Origin を検証する。要件1-12） */
 export async function handleLogout(
   event: APIGatewayProxyEventV2,
   cfg: RuntimeConfig,
+  meta: RequestMeta,
 ): Promise<HttpResponse> {
-  const token = readSessionCookie((event.cookies ?? []).join('; '));
+  assertSameOrigin(meta, cfg.allowedOrigin);
+  const token = readSessionCookie((event.cookies ?? []).join('; ') || meta.cookieHeader);
   const payload = token ? verifySession(token, cfg.secrets.cookieSecret) : null;
   if (payload) {
     await bumpSessionVersion(cfg.app, payload.userId);

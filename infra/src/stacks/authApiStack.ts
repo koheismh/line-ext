@@ -1,11 +1,12 @@
 // AuthApiStack: API Gateway HTTP API + API Lambda + 最小権限IAM + SSM 参照。
-// design.md「CDKスタック分割」に準拠。
+// design.md「CDKスタック分割」に準拠。削除キューは ProcessingStack から受け取る（Processing → AuthApi の一方向参照）。
 
 import { Duration, Stack, type StackProps, CfnOutput } from 'aws-cdk-lib';
 import type { IBucket } from 'aws-cdk-lib/aws-s3';
-import { Runtime } from 'aws-cdk-lib/aws-lambda';
+import type { IQueue } from 'aws-cdk-lib/aws-sqs';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import {
+  CfnStage,
   HttpApi,
   HttpMethod,
   type CorsHttpMethod,
@@ -16,6 +17,7 @@ import type { Construct } from 'constructs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import type { EnvConfig } from '../config.js';
+import { LAMBDA_RUNTIME, lambdaLogGroup } from '../lambdaDefaults.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const lambdaDir = join(here, '..', '..', '..', 'backend', 'src', 'lambda');
@@ -24,8 +26,8 @@ export interface AuthApiStackProps extends StackProps {
   config: EnvConfig;
   metaBucket: IBucket;
   mediaBucket: IBucket;
-  /** 削除キューURL。削除202後に投入する。 */
-  deletionQueueUrl?: string;
+  /** 削除キュー。DELETE 受理（202）後に削除ジョブを投入する。 */
+  deletionQueue?: IQueue;
   /** アプリの公開オリジン（CloudFrontドメイン）。CSRF/CORS/リダイレクト基点。 */
   allowedOrigin?: string;
   /** LINE コールバックURL。 */
@@ -49,7 +51,7 @@ export class AuthApiStack extends Stack {
 
     // API Lambda（NodejsFunction で esbuild バンドル）
     this.apiFn = new NodejsFunction(this, 'ApiFn', {
-      runtime: Runtime.NODEJS_20_X,
+      runtime: LAMBDA_RUNTIME,
       entry: join(lambdaDir, 'api.ts'),
       handler: 'handler',
       timeout: Duration.seconds(29), // API Gateway HTTP API の最大は30秒
@@ -63,18 +65,21 @@ export class AuthApiStack extends Stack {
         LINE_CHANNEL_SECRET_PARAM: lineChannelSecretParam,
         LINE_CALLBACK_URL: props.lineCallbackUrl ?? '',
         ALLOWED_ORIGIN: props.allowedOrigin ?? '',
-        ...(props.deletionQueueUrl
-          ? { DELETION_QUEUE_URL: props.deletionQueueUrl }
-          : {}),
+        ...(props.deletionQueue ? { DELETION_QUEUE_URL: props.deletionQueue.queueUrl } : {}),
       },
+      logGroup: lambdaLogGroup(this, 'ApiFnLogs', config),
       bundling: { externalModules: ['@aws-sdk/*'] },
     });
 
-    // 最小権限: メタはRW、メディアは署名URL発行のためRead
+    // 最小権限:
+    //  - メタデータ: 読み書き
+    //  - メディア: 署名付きURLの発行対象である originals/・previews/ のみ読み取り（trash/ は発行対象にしない）
+    //  - メディア: originals/ への書き込み（署名付きPUT・マルチパート・再処理の上書きコピー）
     metaBucket.grantReadWrite(this.apiFn);
-    mediaBucket.grantRead(this.apiFn);
-    // アップロード署名にCreateMultipartUploadが必要
+    mediaBucket.grantRead(this.apiFn, 'originals/*');
+    mediaBucket.grantRead(this.apiFn, 'previews/*');
     mediaBucket.grantPut(this.apiFn, 'originals/*');
+    props.deletionQueue?.grantSendMessages(this.apiFn);
     // SSM パラメータの読み取り（復号含む）を対象パスのみに限定して付与
     this.apiFn.addToRolePolicy(
       new PolicyStatement({
@@ -84,7 +89,7 @@ export class AuthApiStack extends Stack {
         ],
       }),
     );
-    // SecureString 復号のため KMS デフォルトキーの Decrypt を許可
+    // SecureString 復号のため KMS デフォルトキーの Decrypt を許可（SSM 経由の呼び出しに限定）
     this.apiFn.addToRolePolicy(
       new PolicyStatement({
         actions: ['kms:Decrypt'],
@@ -111,6 +116,15 @@ export class AuthApiStack extends Stack {
         allowCredentials: true,
       },
     });
+
+    // スロットリング（要件8-11）。既存の $default ステージを置き換えないよう L1 で設定する
+    const defaultStage = this.api.defaultStage?.node.defaultChild as CfnStage | undefined;
+    if (defaultStage) {
+      defaultStage.defaultRouteSettings = {
+        throttlingRateLimit: config.apiThrottleRateLimit,
+        throttlingBurstLimit: config.apiThrottleBurstLimit,
+      };
+    }
 
     const integration = new HttpLambdaIntegration('ApiIntegration', this.apiFn);
     this.api.addRoutes({ path: '/{proxy+}', methods: [HttpMethod.ANY], integration });

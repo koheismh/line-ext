@@ -12,10 +12,12 @@ LINEログインした利用者が、個人またはグループのアルバム�
 - **単独 ID から正本を引く方法**: ListObjects のスキャンを避けるため、**locator index** を導入する。`media-locator/{mediaId}.json`（`albumId`/`ownerType`/`ownerId`）、`comment-locator/{commentId}.json`、`album-locator/{albumId}.json`（`ownerType`/`ownerId`）。画面URLに所有主体を含めず、O(1) で正本パスへ到達して認可する。
 - **メディア状態機械**: `uploading → validating → ready | error`。再処理は `error(preview_failed) → validating` のみ許可（`error(invalid_file)` は再処理不可）。削除は `ready | error → deleting → trashed`。放置された `uploading`/`validating` は暫定24時間で `expired` へ失効。状態は後戻りしない（単調に進む）。
 - **権限モデル**: 操作×役割で判定（要件8の権限表）。グループ管理者は `groups.adminUserIds`（配列）で表現し、将来の追加・移譲をデータ変更で拡張可能にする。
-- **セッション**: 無期限の署名付きCookie。`users/{userId}.json.sessionVersion` と Cookie 内の版数を照合し、ログアウトで版数を上げて全Cookieを無効化する。
+- **セッション**: 無期限の署名付きCookie。`users/{userId}.json.sessionVersion` と Cookie 内の版数を照合し、ログアウトで版数を上げて全Cookieを無効化する。Max-Age を付けないCookieはブラウザ終了で消える（＝実質的な自動失効）ため、ブラウザ上限の `Max-Age=400日` を付け、`GET /api/me` のたびに延長する（レビュー 2026-10-27）。
 - **秘密情報の取得**: CDKは環境変数にSSMの**パス名のみ**を渡し（`COOKIE_SECRET_PARAM`等）、Lambda実行時に `@aws-sdk/client-ssm` で値を取得してプロセス内キャッシュする（`handlers/secrets.ts`）。秘密をCloudFormation/環境変数に平文展開せず、SecureStringのデプロイ時展開制約も回避する。
-- **署名付きURL**: 発行は無料、費用は転送量。用途別に期限を分け、同一メディアは有効期限内で同一URLを再利用（キャッシュ・転送量削減）。プレビュー1h / 写真原本5分 / 動画再生30分（暫定）。
-- **削除は非同期**: `DELETE` は `deleting` にして即時応答し、コピー〜元削除はキュー経由Lambdaで実行・自動再試行する（HTTP APIの30秒制限回避）。
+- **署名付きURL**: 発行は無料、費用は転送量。用途別に期限を分け、同一メディアは有効期限内で同一URLを再利用（キャッシュ・転送量削減）。プレビュー1h / 写真原本5分 / 動画再生30分（暫定）。アップロード用は参照用と別管理で、単一PUT 15分 / マルチパートの各パート 1h（暫定、`UPLOAD_URL_TTL_SECONDS`）。
+- **S3 クライアントのチェックサム**: SDK v3 は既定でアップロードに CRC32 を付与し、署名付きURLでは空データのCRC32（`x-amz-checksum-crc32=AAAAAA==`）がURLに固定される。ブラウザ直送と両立しないため、S3 クライアントは `requestChecksumCalculation` / `responseChecksumValidation` を `WHEN_REQUIRED` にする（`repo/s3Client.ts`）。
+- **削除は非同期**: `DELETE` は `deleting` にして即時応答し、コピー〜元削除はキュー経由Lambdaで実行・自動再試行する（HTTP APIの30秒制限回避）。キューは ProcessingStack に置き、API Lambda へは URL と送信権限を渡す（Processing → AuthApi の一方向参照）。投入に失敗しても削除は受理済みとし、定期掃除（10分）が再投入する。
+- **再処理**: `error(preview_failed)` は投稿者が `POST /api/media/{mediaId}/reprocess` で再処理できる。API は原本を同じキーへ上書きコピー（`MetadataDirective=REPLACE`）して ObjectCreated を再発火させ、サムネイルLambdaが `error(preview_failed) → validating → ready | error` を行う（新しいインフラを増やさないため）。Sharp / FFmpeg の Layer を後から配備した場合の回復手段を兼ねる。
 - **時刻順ID**: `mediaId`/`commentId` は ULID または UUIDv7 を用い、ListObjectsV2 の辞書順＝登録日時順になるようにする。
 - **回線ガードと保留管理はフロント責務**。サーバは容量・形式・権限の検証を独立して必ず行う。保留中はサーバAPIを呼ばない（mediaId を作らない）。
 
@@ -59,6 +61,7 @@ LINEログインした利用者が、個人またはグループのアルバム�
 | `ProcessingStack` | サムネイル生成Lambda、FFmpeg Layer、削除ワーカーLambda、SQS、EventBridge ルール |
 | `DeliveryStack` | CloudFront + OAC、`/api/*` ルーティング、静的フロントS3とそのOrigin、CloudFront Functions |
 
+- スタック間の参照は `Storage → Processing → AuthApi → Delivery` の一方向（AuthApi は Processing の削除キューを受け取るだけで、逆方向の参照は持たない）。
 - **循環参照の回避策**:
   - S3→Lambda のイベントは直結せず **EventBridge 経由**（CDKの既知の循環参照回避）。対象は `originals/` プレフィックスのみ（`previews/`・`trash/` では起動しない）。
   - 静的フロントS3は **DeliveryStack 側に置く**（CloudFront のバケットポリシーとの循環を避ける）。
@@ -75,11 +78,11 @@ LINEログインした利用者が、個人またはグループのアルバム�
 | ルーティング | React Router | 追加課金なし |
 | 状態管理 | React Context + hooks | 必要が明確になれば Zustand を検討 |
 | ローカル保存 | IndexedDB | 保留中アップロードの記録（要件9） |
-| バックエンド | Node.js LTS Lambda + TypeScript | |
+| バックエンド | Node.js LTS Lambda + TypeScript | `nodejs24.x`（`nodejs20.x` は 2026-04-30 に Lambda で非推奨）。ログ保存期間は30日（暫定） |
 | IaC | AWS CDK (TypeScript) | 全リソースをコード管理 |
 | 認証 | LINE Login v2.1 OIDC | 認可コードフロー + state/nonce/PKCE |
 | 画像処理 | Sharp | サムネイル生成Lambda |
-| 動画処理 | FFmpeg (Lambda Layer) | 冒頭フレーム抽出 |
+| 動画処理 | FFmpeg / ffprobe (Lambda Layer) | 冒頭フレーム抽出・コーデック判定。`FFMPEG_LAYER_ARN`、既定パス `/opt/bin/ffmpeg`・`/opt/bin/ffprobe` |
 | 秘密情報 | SSM Parameter Store SecureString | |
 
 ---
@@ -132,6 +135,7 @@ identities/line/{sha256OfLineSub}.json
 user-groups/{userId}/{groupId}.json        # 検索用インデックス（正本ではない）
 groups/{groupId}.json                       # メンバーが正本
 invites/{sha256OfInviteToken}.json
+group-invites/{groupId}/{inviteId}.json     # 検索用インデックス（正本は invites/。管理者の有効招待一覧・失効に使う）
 albums/{ownerType}/{ownerId}/{albumId}.json
 media/{albumId}/{mediaId}.json              # メディア正本
 media-locator/{mediaId}.json                # mediaId→albumId等の逆引き
@@ -248,8 +252,9 @@ interface ApiError {
 1. `GET /api/auth/line/start`：state・nonce・PKCE(verifier) を生成しサーバ側（署名付き一時Cookie等）に保持、LINE認可URLへリダイレクト。
 2. `GET /api/auth/line/callback`：state 照合 → 認可コードをサーバで交換 → IDトークンの署名/issuer/audience/nonce/exp を検証。
 3. `identities/line/{sha256(sub)}.json` を参照。無ければ `users/{userId}.json` を新規作成し対応を記録（初回ログイン）。
-4. 署名付きセッションCookie（Secure/HttpOnly/SameSite=Lax、期限付き）を発行。
-5. 変更系APIは Origin 検証 + CSRFトークンで保護。
+4. 署名付きセッションCookie（Secure/HttpOnly/SameSite=Lax、`Max-Age=400日`。`GET /api/me` で延長し実質無期限）を発行。
+5. 変更系API（`POST /api/auth/logout` を含む）は Origin 検証で保護する。セッションCookieは SameSite=Lax のため、クロスサイトの変更系リクエストには送られない（CSRFトークンは使わない）。
+6. キャンセル・失敗時は `{戻り先}?login_error=1` へ戻し、画面で説明と再ログイン導線を表示する。
 
 ### 2. アップロード（要件4・9）
 
@@ -272,17 +277,25 @@ interface ApiError {
              → CreateMultipartUpload、uploadId + 各パートの署名付きURL群
            ブラウザ: パートを並列(暫定3〜4)アップロード、パート毎に指数バックオフ再試行
            期限切れ時: POST .../uploads/{uploadId}/parts でパートURLを再発行
-           POST /api/media/{mediaId}/uploads/{uploadId}/complete
-             → サーバが ListParts で合計サイズ・ETagを取得して検証 → CompleteMultipartUpload → status=validating
+           POST /api/media/{mediaId}/uploads/{uploadId}/complete（開始した本人のみ・冪等）
+             → サーバが ListParts で各パートのサイズ・ETagを取得し、合計＝申告サイズを検証
+               （超過は413、不足・不一致は422）→ ListParts の ETag で CompleteMultipartUpload
+             → status が uploading のときだけ validating に進める（イベント処理が先行していても巻き戻さない）
+           クライアント申告のパート ETag は使わない
 
 [EventBridge(originals/のObjectCreated)→サムネイルLambda]
    対象プレフィックスは originals/ のみ（previews/・trash/ では起動しない）
    現在状態を確認し deleting/trashed/expired/error(invalid_file) なら skip（単調性）
+   uploading（単一PUTの到着）・error(preview_failed)（再処理）は validating に進めてから処理する
    status=validating → 実サイズ・MIME/マジックバイト(先頭Range)・動画コーデック検証
      失敗: status=error, errorReason=invalid_file（閲覧不可）
-     成功: Sharp(EXIF回転・メタ除去)/FFmpeg(署名付きURL入力・黒フレーム回避)でプレビュー生成
-           → previews/ 書き込み前後で状態再確認（削除済みなら書いたものを片付け）→ status=ready
-     プレビュー生成失敗: status=error, errorReason=preview_failed（再処理可）
+       （HEIF/AVIF の ftyp は動画として扱わない。ffprobe で映像ストリームが無い動画も invalid_file）
+     成功: Sharp(EXIF回転・メタ除去)/FFmpeg(署名付きURL入力・1秒目から thumbnail フィルタで黒フレーム回避)でプレビュー生成
+           → previews/ 書き込み後に状態再確認（削除・失効済みなら ready にせず書いたプレビューを削除）→ status=ready
+           → ready になったら表紙を再計算（最初の写真の自動設定）
+     プレビュー生成失敗・ツール未配備: status=error, errorReason=preview_failed（投稿者が再処理可）
+   コーデック: ffprobe で取得して videoCodec に記録（未配備なら null）。H.264 以外は画面で「再生できない場合がある」と表示し、
+     拒否はしない（要件4-5との関係は tasks.md 18 の論点を参照）
 ```
 
 - 署名の制限: 単一PUTは `Content-Length`/`Content-Type` を署名に含める。マルチパートは complete 時にサーバが ListParts で合計サイズを検証。各パートURLは一時認証情報の失効に備え再発行APIを用意。
@@ -292,9 +305,11 @@ interface ApiError {
 - 大容量動画: 一時領域へ丸ごと落とさず、マジックバイトは先頭Range、FFmpegは署名付きURL入力で必要部分のみ読む。Lambdaの一時領域/メモリ/タイムアウトを明示設定。
 
 ### 3. 表紙の自動選定（要件3）
-- アルバムに最初の写真が `ready` になった時点で、`coverSource=auto` の場合のみ `coverMediaId` を自動設定（手動設定 `coverSource=manual` は上書きしない）。
-- 手動変更は「同一アルバム・`ready`・写真」に限定して受け付ける。
-- 表紙メディア削除時: 残存写真を優先 → 無ければ動画サムネイル → 無ければ null（プレースホルダ）。
+- アルバムに最初の写真が `ready` になった時点で、`coverSource=auto` の場合のみ `coverMediaId` を自動設定（手動設定 `coverSource=manual` は上書きしない）。動画のみのアルバムで動画が自動表紙になっていても、写真が `ready` になった時点で写真に切り替える。
+- 手動変更は「同一アルバム・`ready`・写真」に限定して受け付ける。`coverMediaId: null` の指定は「手動指定の解除」で、`coverSource=auto` に戻して即時に再選定する。
+- 表紙メディア削除時（`DELETE` 受理で `deleting` にした時点）: 残存写真を優先 → 無ければ動画サムネイル → 無ければ null（プレースホルダ）。手動表紙が削除された場合も同じ順で再選定し、`coverSource=auto` に戻す。
+- 再計算はシステム更新のため ETag 競合を内部で再試行する。削除時の再計算に失敗しても削除の受理は取り消さない（次回のメディア ready 時に回復）。
+- アルバム一覧 API は表紙のプレビューURL（表紙メディアが同一アルバムの `ready` のときのみ）とグループ名を同梱して返す。
 
 ### 4. 削除とごみ箱（要件7・非同期）
 
@@ -306,19 +321,25 @@ DELETE /api/media/{mediaId}
 
 [削除ワーカーLambda（SQS）]
   for each (original, preview):
+     元が存在しなければスキップ（前回の実行で移動済み・プレビュー未生成）
      CopyObject originals/..|previews/.. → trash/{deletedDate}/..（確定済みキー）
      HeadObject でコピー先をサイズ(必要ならチェックサム)検証（ETag一致は条件にしない）
+     検証失敗なら例外 → 元は残したまま trashed にせず、SQS の再試行に委ねる
   全コピー検証OK後に 元を DeleteObject → status=trashed、movedAt 記録
   失敗/未完了は可視性タイムアウト後に再実行（冪等、続きから）
 
 [定期掃除（EventBridge スケジュール）]
   deleting が10分以上 → 削除ジョブ再投入
-  uploading/validating が24時間以上 → status=expired、残オブジェクトと未完了MPUを片付け
+  uploading/validating が24時間以上 → 未完了MPUを中断し、残った原本・プレビューは
+    （検証済みかもしれない原本を直接消さないため）削除と同じ手順で trash/{失効日}/ へ退避 → status=expired
+    退避先は trash 情報として記録。途中で失敗しても状態は変わらず、次回の掃除で続きから実行
+  1件の失敗で掃除全体を止めない
 ```
 
 - 不変条件: コピー検証前に原本を消さない。`trash/` は参照/DL APIから完全除外。Lifecycle Expiration は `trash/` のみ（暫定30日）。`error` は投稿者/管理者が削除可能。
 
 ### 5. コメント（要件6）
+- 一覧: 対象プレフィックスを `Delimiter='/'` で列挙して root 単位でページングする（暫定20 root/ページ、`nextToken`）。応答は `{ threads, authors(userId→表示名), canModerate, nextToken }`。
 - 投稿: `comments/{targetType}/{targetId}/{rootCommentId}/{commentId}.json` + `comment-locator/{commentId}.json`。対象が `deleting` 以降/不存在なら投稿拒否。
 - 返信は常に同一 `rootCommentId` 直下（2階層固定、孫なし）。`replyToCommentId` に返信先を記録して誰への返信か示す。
 - 親削除: `status=deleted`, body 空, `deletedAt` 付与（墓標）。表示可能な子がある限り保持。子が全滅した墓標は非表示。
@@ -380,7 +401,11 @@ DELETE /api/media/{mediaId}
 - 認可は操作×役割の権限表（requirements 要件8）で判定。管理者は `adminUserIds` 配列。
 - 公開範囲は招待制。管理者のみ招待発行。ユーザー/グループ総容量上限とAPI Gatewayスロットリング。Budgetsは通知のみ（自動停止しない）。
 - 秘密情報は SSM SecureString。フロント・Git に出さない。**CDKは環境変数にSSMパス名のみを渡し、Lambda実行時に `@aws-sdk/client-ssm` で値を取得・プロセス内キャッシュ**する（`handlers/secrets.ts`）。CloudFormationテンプレートやLambda環境変数に秘密の平文を残さない（SecureStringのデプロイ時展開制約も回避）。LambdaにはSSM GetParameters + KMS Decrypt(ssm経由限定)の最小権限を付与。
-- IAM 最小権限: Lambda は対象バケット/プレフィックス限定。`s3:*`・`*` リソース不可。`trash/` への署名付きURL発行権限は与えない。アップロード署名に `Content-Length`/`Content-Type` を含める。
+- IAM 最小権限: Lambda は対象バケット/プレフィックス限定。`s3:*`・`*` リソース不可。`trash/` への署名付きURL発行権限は与えない。アップロード署名に `Content-Length`/`Content-Type` を含める（presigner は既定で content-type を署名しないため `signableHeaders` で明示する）。
+  - API Lambda: メタデータ RW、メディアは `originals/*`・`previews/*` の読み取りと `originals/*` への書き込みのみ、削除キューへの送信。
+  - サムネイル: `originals/*` 読み取り、`previews/*` 書き込み・削除（生成中に削除されたメディアの片付け）。
+  - 削除ワーカー・定期掃除: `originals/*`・`previews/*`・`trash/*` 読み取り、`trash/*` 書き込み、`originals/*`・`previews/*` 削除（`trash/` の削除は Lifecycle のみ）。定期掃除はさらに `originals/*` の `AbortMultipartUpload`。
+- API Gateway は `$default` ステージにスロットリング（暫定: 20 req/秒、バースト40。`API_THROTTLE_RATE`/`API_THROTTLE_BURST`）。
 - 入力検証: 形式は拡張子だけで判断せず、アップロード後に実サイズ・MIME/マジックバイト・動画コーデックを検証。プレビュー生成時にEXIF位置情報を除去。
 - CDK に Budgets、ログ保存期間、パブリック公開防止ガードを組み込む。
 
@@ -400,6 +425,6 @@ DELETE /api/media/{mediaId}
 
 - `architecture.md` は別AI作成の原典として温存。実装の正は本 design.md と steering とする。差分があれば本書を優先（AGENTS.md もこの優先順位に合わせて更新済み）。
 - locator index 方式は MVP の S3 JSON 構成に最適化したもの。将来 DynamoDB へ段階移行する場合、locator と正本の対応をそのままテーブル化できる構造にしておく。
-- AWS SDK for JavaScript v3 の既定チェックサムが署名付きURL生成/ブラウザアップロードに影響しないか実装時に確認する。
+- AWS SDK for JavaScript v3 の既定チェックサムが署名付きURL生成/ブラウザアップロードに影響しないか実装時に確認する。→ 確認済み（2026-10-27）。既定設定では署名付きPUT/パートURLに空データのCRC32が入るため、`WHEN_REQUIRED` に設定した。実S3での挙動は実機で確認する。
 - LINE ログインのチャネルが「開発中」のままだと権限保持者しかログインできない。公開手順に含める。
 - 動画の冒頭フレーム抽出は FFmpeg 失敗（破損・コーデック差・黒フレーム）を想定し、失敗時は `error(preview_failed)` で再処理可能にする。

@@ -34,26 +34,27 @@ export function selectCover(items: CoverCandidate[]): string | null {
 }
 
 /**
- * 新しい写真が ready になったときの自動表紙設定を判定する。
- * coverSource が 'auto' かつ現在表紙が未設定/無効な場合のみ自動更新する。
- * 手動設定（'manual'）は上書きしない。
- * @returns 更新すべき coverMediaId。更新不要なら undefined。
+ * 自動表紙（coverSource='auto'）の更新先を判定する。メディアが ready になった/削除された際に呼ぶ。
+ * - 手動設定（'manual'）は上書きしない
+ * - 現在の表紙が ready の写真なら維持する
+ * - それ以外（未設定・削除済み・動画）は再選定する。動画表紙は写真が ready になった時点で写真に切り替わる（要件3-8, 3-9）
+ * - ready のメディアが無くなれば null（プレースホルダ, 要件3-10）
+ * @returns 更新すべき coverMediaId（null=表紙なし）。更新不要なら undefined。
  */
 export function autoCoverOnReady(
   coverSource: 'auto' | 'manual',
   currentCoverMediaId: string | null,
   items: CoverCandidate[],
-): string | undefined {
+): string | null | undefined {
   if (coverSource === 'manual') return undefined;
-  // 現在の表紙が ready で存在するなら維持
-  if (
-    currentCoverMediaId &&
-    items.some((m) => m.mediaId === currentCoverMediaId && m.status === 'ready')
-  ) {
+  const current = currentCoverMediaId
+    ? items.find((m) => m.mediaId === currentCoverMediaId)
+    : undefined;
+  if (current && current.status === 'ready' && current.kind === 'photo') {
     return undefined;
   }
   const selected = selectCover(items);
-  return selected === currentCoverMediaId ? undefined : (selected ?? undefined);
+  return selected === currentCoverMediaId ? undefined : selected;
 }
 
 /**

@@ -1,6 +1,7 @@
 // CDK共通の設定値。環境名・リージョン・暫定パラメータを集約する。
 // 暫定値は shared/constants と整合させる（変更しやすさを優先）。
 
+import { RetentionDays } from 'aws-cdk-lib/aws-logs';
 import {
   TRASH_RETENTION_DAYS,
   ABORT_INCOMPLETE_MULTIPART_DAYS,
@@ -18,6 +19,12 @@ export interface EnvConfig {
   monthlyBudgetUsd: number;
   /** 予算アラートの通知先メール（任意）。 */
   budgetNotifyEmail?: string;
+  /** API Gateway のスロットリング（要件8-11, 暫定）。定常レート（req/秒）。 */
+  apiThrottleRateLimit: number;
+  /** API Gateway のスロットリング（バースト上限）。 */
+  apiThrottleBurstLimit: number;
+  /** Lambda ログの保存期間（steering: ログ保存期間を CDK で管理）。 */
+  logRetention: RetentionDays;
 }
 
 export function loadEnvConfig(): EnvConfig {
@@ -31,5 +38,8 @@ export function loadEnvConfig(): EnvConfig {
     ...(process.env.BUDGET_NOTIFY_EMAIL
       ? { budgetNotifyEmail: process.env.BUDGET_NOTIFY_EMAIL }
       : {}),
+    apiThrottleRateLimit: Number(process.env.API_THROTTLE_RATE ?? '20'),
+    apiThrottleBurstLimit: Number(process.env.API_THROTTLE_BURST ?? '40'),
+    logRetention: RetentionDays.ONE_MONTH,
   };
 }

@@ -29,6 +29,33 @@ export async function listKeys(
 }
 
 /**
+ * プレフィックス直下の「サブプレフィックス」一覧（Delimiter='/'、ページング対応）。
+ * コメントの root 単位ページング（comments/{type}/{id}/{rootId}/）に使う。
+ */
+export async function listSubPrefixes(
+  bucket: string,
+  prefix: string,
+  opts?: { maxKeys?: number; continuationToken?: string },
+): Promise<{ prefixes: string[]; nextToken?: string }> {
+  const res = await s3.send(
+    new ListObjectsV2Command({
+      Bucket: bucket,
+      Prefix: prefix,
+      Delimiter: '/',
+      ...(opts?.maxKeys ? { MaxKeys: opts.maxKeys } : {}),
+      ...(opts?.continuationToken ? { ContinuationToken: opts.continuationToken } : {}),
+    }),
+  );
+  const prefixes = (res.CommonPrefixes ?? []).map((p) => p.Prefix!).filter(Boolean);
+  return {
+    prefixes,
+    ...(res.IsTruncated && res.NextContinuationToken
+      ? { nextToken: res.NextContinuationToken }
+      : {}),
+  };
+}
+
+/**
  * プレフィックス配下のJSONをすべて読み込む（小規模コレクション向け）。
  * 大規模はページングAPIを別途使う。
  */

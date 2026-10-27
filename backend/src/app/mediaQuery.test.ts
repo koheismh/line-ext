@@ -62,9 +62,13 @@ describe('listAlbumMedia', () => {
   it('投稿者本人には処理中/失敗も表示、他人には非表示', async () => {
     seedMedia('r1', 'ready', 'owner');
     seedMedia('e1', 'error', 'owner');
-    // 投稿者 owner
+    // 投稿者 owner（状態と理由が分かるので「処理中」と「失敗」を区別して表示できる）
     const ownerView = await listAlbumMedia(ctx, 'a1', 'owner');
     expect(ownerView.items.map((i) => i.mediaId).sort()).toEqual(['e1', 'r1']);
+    const failed = ownerView.items.find((i) => i.mediaId === 'e1')!;
+    expect(failed.status).toBe('error');
+    expect(failed.errorReason).toBe('preview_failed');
+    expect(failed.previewUrl).toBeNull();
     // 他メンバー member には ready のみ
     const memberView = await listAlbumMedia(ctx, 'a1', 'member');
     expect(memberView.items.map((i) => i.mediaId)).toEqual(['r1']);
@@ -106,5 +110,18 @@ describe('getMediaUrl', () => {
     await expect(getMediaUrl(ctx, 'r1', 'stranger', 'preview')).rejects.toSatisfy(
       (e: unknown) => e instanceof AppError && e.status === 404,
     );
+  });
+
+  it('kind が不正なら422（既定の期限で原本URLを出さない）', async () => {
+    seedMedia('r1', 'ready', 'owner');
+    await expect(
+      getMediaUrl(ctx, 'r1', 'member', 'xxx' as 'preview'),
+    ).rejects.toSatisfy((e: unknown) => e instanceof AppError && e.status === 422);
+  });
+
+  it('download は attachment と元のファイル名を付ける', async () => {
+    seedMedia('r1', 'ready', 'owner');
+    const url = new URL(await getMediaUrl(ctx, 'r1', 'member', 'download'));
+    expect(url.searchParams.get('response-content-disposition')).toBe("attachment; filename*=UTF-8''f");
   });
 });

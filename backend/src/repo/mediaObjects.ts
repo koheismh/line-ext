@@ -1,14 +1,18 @@
 // メディアバケットのオブジェクトIO（repo層）。
 // 署名付きURL発行（用途別期限・同一URL再利用キャッシュ）、CopyObject、
-// サイズ検証(HeadObject)、DeleteObject、ListParts。
+// サイズ検証(HeadObject)、DeleteObject、マルチパート操作（Create/UploadPart署名/ListParts/Complete/Abort）。
 
 import {
+  AbortMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
   CopyObjectCommand,
+  CreateMultipartUploadCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
-  PutObjectCommand,
   ListPartsCommand,
+  PutObjectCommand,
+  UploadPartCommand,
   type S3ServiceException,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -33,6 +37,19 @@ function cacheKey(bucket: string, key: string, kind: SignedUrlKind): string {
 /** テスト用にキャッシュを明示クリアする。 */
 export function clearSignedUrlCache(): void {
   urlCache.clear();
+}
+
+/**
+ * 保存用の Content-Disposition（RFC 6266 / RFC 5987）。
+ * 日本語ファイル名も正しく保存されるよう filename* に UTF-8 でエンコードする。
+ */
+export function contentDispositionAttachment(fileName?: string): string {
+  if (!fileName) return 'attachment';
+  const encoded = encodeURIComponent(fileName).replace(
+    /['()*]/g,
+    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+  return `attachment; filename*=UTF-8''${encoded}`;
 }
 
 /**
@@ -63,11 +80,7 @@ export async function getReadSignedUrl(params: {
     Key: key,
     ...(contentType ? { ResponseContentType: contentType } : {}),
     ...(kind === 'download'
-      ? {
-          ResponseContentDisposition: `attachment${
-            downloadFileName ? `; filename="${encodeURIComponent(downloadFileName)}"` : ''
-          }`,
-        }
+      ? { ResponseContentDisposition: contentDispositionAttachment(downloadFileName) }
       : {}),
   });
   const url = await getSignedUrl(s3, cmd, { expiresIn: ttl });
@@ -80,6 +93,7 @@ export async function getReadSignedUrl(params: {
 /**
  * 単一PUTアップロード用の署名付きURL。
  * Content-Length と Content-Type を署名に含め、申告と異なるアップロードをS3段階で拒否させる。
+ * presigner は既定で content-type を署名対象から外すため、signableHeaders で明示的に含める。
  */
 export async function getUploadSignedUrl(params: {
   bucket: string;
@@ -94,7 +108,10 @@ export async function getUploadSignedUrl(params: {
     ContentType: params.contentType,
     ContentLength: params.contentLength,
   });
-  return getSignedUrl(s3, cmd, { expiresIn: params.expiresIn });
+  return getSignedUrl(s3, cmd, {
+    expiresIn: params.expiresIn,
+    signableHeaders: new Set(['content-type', 'content-length']),
+  });
 }
 
 /** オブジェクトのサイズを取得する。存在しなければ null。 */
@@ -127,6 +144,22 @@ export async function copyObject(
 }
 
 /**
+ * オブジェクトを同じキーへ上書きコピーし、ObjectCreated イベントを再発火させる（再処理の起点）。
+ * 内容は変えず、メタデータ置換扱いにするため Content-Type を指定する。
+ */
+export async function touchObject(bucket: string, key: string, contentType: string): Promise<void> {
+  await s3.send(
+    new CopyObjectCommand({
+      Bucket: bucket,
+      CopySource: `${bucket}/${encodeURIComponent(key)}`,
+      Key: key,
+      MetadataDirective: 'REPLACE',
+      ContentType: contentType,
+    }),
+  );
+}
+
+/**
  * コピー先をサイズで検証する（ETag一致は検証条件にしない：マルチパート原本のETagはコピー後と一致しないため）。
  * @returns 検証成功なら true
  */
@@ -147,15 +180,26 @@ export async function deleteObject(bucket: string, key: string): Promise<void> {
   await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
 }
 
-/** マルチパートの合計サイズを ListParts で取得する（complete前の検証用）。 */
-export async function sumUploadedParts(
+// ---- マルチパートアップロード ----
+
+/** ListParts で得たパート情報。 */
+export interface UploadedPartInfo {
+  partNumber: number;
+  etag: string;
+  size: number;
+}
+
+/**
+ * アップロード済みパートを ListParts で取得する（complete前の検証用。ページング対応）。
+ * クライアント申告の ETag/サイズは信用せず、この結果で完了・検証する。
+ */
+export async function listUploadedParts(
   bucket: string,
   key: string,
   uploadId: string,
-): Promise<number> {
-  let total = 0;
+): Promise<UploadedPartInfo[]> {
+  const parts: UploadedPartInfo[] = [];
   let partNumberMarker: string | undefined;
-  // ページング（1000パート超に対応）
   do {
     const res = await s3.send(
       new ListPartsCommand({
@@ -166,21 +210,23 @@ export async function sumUploadedParts(
       }),
     );
     for (const p of res.Parts ?? []) {
-      total += p.Size ?? 0;
+      if (p.PartNumber === undefined) continue;
+      parts.push({ partNumber: p.PartNumber, etag: p.ETag ?? '', size: p.Size ?? 0 });
     }
     partNumberMarker = res.IsTruncated ? res.NextPartNumberMarker : undefined;
   } while (partNumberMarker);
-  return total;
+  return parts.sort((a, b) => a.partNumber - b.partNumber);
 }
 
-// ---- マルチパートアップロード ----
-
-import {
-  CreateMultipartUploadCommand,
-  CompleteMultipartUploadCommand,
-  AbortMultipartUploadCommand,
-  UploadPartCommand,
-} from '@aws-sdk/client-s3';
+/** マルチパートの合計サイズを ListParts で取得する。 */
+export async function sumUploadedParts(
+  bucket: string,
+  key: string,
+  uploadId: string,
+): Promise<number> {
+  const parts = await listUploadedParts(bucket, key, uploadId);
+  return parts.reduce((total, p) => total + p.size, 0);
+}
 
 /** マルチパートアップロードを開始し uploadId を返す。 */
 export async function createMultipartUpload(params: {
@@ -221,7 +267,7 @@ export async function getPartUploadUrls(params: {
   );
 }
 
-/** マルチパートを完了する。parts はクライアント申告の ETag/PartNumber。 */
+/** マルチパートを完了する。parts はサーバ側で ListParts から取得した値を渡す。 */
 export async function completeMultipartUpload(params: {
   bucket: string;
   key: string;

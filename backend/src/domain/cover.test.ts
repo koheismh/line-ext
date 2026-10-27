@@ -56,6 +56,18 @@ describe('autoCoverOnReady', () => {
     ];
     expect(autoCoverOnReady('auto', 'p1', items)).toBe('p2');
   });
+  it('動画のみで動画が表紙のとき、最初の写真が ready になれば写真に切り替える（要件3-8, 3-9）', () => {
+    const items = [
+      m('v1', 'video', 'ready', '2026-01-01T00:00:00Z'),
+      m('p1', 'photo', 'ready', '2026-01-02T00:00:00Z'),
+    ];
+    expect(autoCoverOnReady('auto', 'v1', items)).toBe('p1');
+  });
+  it('表紙が削除されて表示可能なメディアが無くなれば null（プレースホルダ, 要件3-10）', () => {
+    const items = [m('p1', 'photo', 'deleting', '2026-01-01T00:00:00Z')];
+    expect(autoCoverOnReady('auto', 'p1', items)).toBeNull();
+    expect(autoCoverOnReady('auto', null, items)).toBeUndefined(); // もともと null なら変更なし
+  });
 });
 
 describe('isValidManualCover', () => {

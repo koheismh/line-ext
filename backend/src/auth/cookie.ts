@@ -1,5 +1,10 @@
 // セッションCookieの属性組み立てと解析。
-// requirements/security: Secure / HttpOnly / SameSite=Lax。無期限運用のため Max-Age は付けない。
+// requirements/security: Secure / HttpOnly / SameSite=Lax。
+// 要件1-6「無期限」: Max-Age を付けないセッションCookieはブラウザ終了で消えてしまうため、
+// ブラウザ上限の長期 Max-Age（400日）を付け、/api/me のたびに延長する（実質無期限）。
+// 失効はログアウト時の sessionVersion 更新で行う。
+
+import { SESSION_COOKIE_MAX_AGE_SECONDS } from '@photo-album/shared';
 
 const SESSION_COOKIE_NAME = 'session';
 
@@ -10,13 +15,13 @@ export { SESSION_COOKIE_NAME };
  * @param token 署名付きセッショントークン
  */
 export function buildSessionCookie(token: string): string {
-  // Path=/、Secure、HttpOnly、SameSite=Lax。Max-Age なし（無期限）。
   return [
     `${SESSION_COOKIE_NAME}=${token}`,
     'Path=/',
     'HttpOnly',
     'Secure',
     'SameSite=Lax',
+    `Max-Age=${SESSION_COOKIE_MAX_AGE_SECONDS}`,
   ].join('; ');
 }
 

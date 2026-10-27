@@ -1,5 +1,4 @@
-// CDKアプリのエントリ。環境ごとにスタックを構成する。
-// 現時点では StorageStack を定義。後続タスクで Auth/Processing/Delivery を追加する。
+// CDKアプリのエントリ。環境ごとに Storage / Processing / AuthApi / Delivery の4スタックを構成する。
 
 import { App } from 'aws-cdk-lib';
 import { loadEnvConfig } from './config.js';
@@ -24,18 +23,20 @@ const storage = new StorageStack(app, `PhotoAlbum-Storage-${config.envName}`, {
   allowedOrigins,
 });
 
-new ProcessingStack(app, `PhotoAlbum-Processing-${config.envName}`, {
+const processing = new ProcessingStack(app, `PhotoAlbum-Processing-${config.envName}`, {
   env,
   config,
   metaBucket: storage.metaBucket,
   mediaBucket: storage.mediaBucket,
 });
 
+// 参照は Storage → Processing → AuthApi → Delivery の一方向（AuthApi は削除キューを受け取るだけ）
 const authApi = new AuthApiStack(app, `PhotoAlbum-AuthApi-${config.envName}`, {
   env,
   config,
   metaBucket: storage.metaBucket,
   mediaBucket: storage.mediaBucket,
+  deletionQueue: processing.deletionQueue,
   ...(appOrigin
     ? { allowedOrigin: appOrigin, lineCallbackUrl: `${appOrigin}/api/auth/line/callback` }
     : {}),

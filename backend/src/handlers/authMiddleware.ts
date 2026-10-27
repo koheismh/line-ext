@@ -21,22 +21,38 @@ export interface RequestMeta {
   referer?: string;
 }
 
+/** 認証済みセッションの情報。 */
+export interface AuthenticatedSession {
+  userId: string;
+  user: User;
+  /** リクエストで提示された署名付きセッショントークン（Cookie延長に使う）。 */
+  token: string;
+}
+
 /**
- * 認証済み userId を解決する。
- * - セッション無効/未ログインは 401
- * - 変更系で Origin 不正は 403（CSRF）
+ * 変更系リクエストの Origin を検証する（要件1-12）。不正なら 403。
+ * 認証不要の変更系（ログアウト）からも使う。
  */
-export async function requireUser(
-  ctx: AppContext,
-  req: RequestMeta,
-  cookieSecret: string,
-  allowedOrigin: string,
-): Promise<string> {
-  // CSRF（変更系のみ）
+export function assertSameOrigin(req: RequestMeta, allowedOrigin: string): void {
   const origin = req.origin ?? originFromReferer(req.referer);
   if (!isAllowedByCsrf(req.method, origin, allowedOrigin)) {
     throw forbidden('不正なリクエスト元です。');
   }
+}
+
+/**
+ * セッションを検証する。
+ * - セッション無効/未ログインは 401
+ * - 変更系で Origin 不正は 403（CSRF）
+ */
+export async function authenticate(
+  ctx: AppContext,
+  req: RequestMeta,
+  cookieSecret: string,
+  allowedOrigin: string,
+): Promise<AuthenticatedSession> {
+  // CSRF（変更系のみ）
+  assertSameOrigin(req, allowedOrigin);
 
   const token = readSessionCookie(req.cookieHeader);
   if (!token) throw unauthorized();
@@ -50,5 +66,16 @@ export async function requireUser(
   if (!isSessionActive(payload, userRec.value.sessionVersion)) {
     throw unauthorized('セッションが無効です。再度ログインしてください。');
   }
-  return payload.userId;
+  return { userId: payload.userId, user: userRec.value, token };
+}
+
+/** 認証済み userId を解決する（authenticate の簡易版）。 */
+export async function requireUser(
+  ctx: AppContext,
+  req: RequestMeta,
+  cookieSecret: string,
+  allowedOrigin: string,
+): Promise<string> {
+  const session = await authenticate(ctx, req, cookieSecret, allowedOrigin);
+  return session.userId;
 }

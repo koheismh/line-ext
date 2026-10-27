@@ -1,6 +1,7 @@
 import { describe, it } from 'vitest';
 import { App } from 'aws-cdk-lib';
 import { Template, Match } from 'aws-cdk-lib/assertions';
+import { RetentionDays } from 'aws-cdk-lib/aws-logs';
 import { StorageStack } from './storageStack.js';
 import type { EnvConfig } from '../config.js';
 
@@ -11,6 +12,9 @@ const config: EnvConfig = {
   abortIncompleteMultipartDays: 1,
   monthlyBudgetUsd: 20,
   budgetNotifyEmail: 'ops@example.com',
+  apiThrottleRateLimit: 20,
+  apiThrottleBurstLimit: 40,
+  logRetention: RetentionDays.ONE_MONTH,
 };
 
 function synth() {

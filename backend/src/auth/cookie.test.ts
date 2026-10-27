@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { SESSION_COOKIE_MAX_AGE_SECONDS } from '@photo-album/shared';
 import {
   buildSessionCookie,
   buildClearSessionCookie,
@@ -7,13 +8,14 @@ import {
 } from './cookie.js';
 
 describe('buildSessionCookie', () => {
-  it('Secure/HttpOnly/SameSite=Lax を含み Max-Age は無い（無期限）', () => {
+  it('Secure/HttpOnly/SameSite=Lax を含み、ブラウザ終了で消えない長期 Max-Age を持つ（実質無期限）', () => {
     const c = buildSessionCookie('tok');
     expect(c).toContain(`${SESSION_COOKIE_NAME}=tok`);
     expect(c).toContain('HttpOnly');
     expect(c).toContain('Secure');
     expect(c).toContain('SameSite=Lax');
-    expect(c).not.toContain('Max-Age');
+    expect(c).toContain(`Max-Age=${SESSION_COOKIE_MAX_AGE_SECONDS}`);
+    expect(SESSION_COOKIE_MAX_AGE_SECONDS).toBeGreaterThanOrEqual(365 * 24 * 60 * 60);
   });
 });
 

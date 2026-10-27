@@ -5,7 +5,8 @@
 
 import {
   ulid,
-  SIGNED_URL_TTL_SECONDS,
+  MULTIPART_MIN_PART_BYTES,
+  UPLOAD_URL_TTL_SECONDS,
   type Media,
   type MultipartInit,
 } from '@photo-album/shared';
@@ -19,17 +20,19 @@ import {
   createMultipartUpload,
   getPartUploadUrls,
   completeMultipartUpload,
-  sumUploadedParts,
+  listUploadedParts,
+  ConflictError,
 } from '../repo/index.js';
 import { createMediaLocator, resolveMediaLocator } from '../repo/locator.js';
-import { validateUploadDeclaration } from '../domain/validation.js';
+import { validateText, validateUploadDeclaration } from '../domain/validation.js';
 import { canTransition } from '../domain/mediaState.js';
 import type { AppContext } from './context.js';
 import { AppError } from './errors.js';
 import { authorizeUpload } from './authorize.js';
 
-/** アップロード署名URLの有効期限（秒）。分割完了に足る長さ。暫定1時間。 */
-const UPLOAD_URL_TTL = 60 * 60;
+const MAX_RETRY = 5;
+/** 表示用ファイル名の最大長（暫定）。 */
+const DISPLAY_FILE_NAME_MAX_LENGTH = 255;
 
 function extFromMime(mime: string): string {
   switch (mime) {
@@ -58,6 +61,28 @@ export interface InitUploadParams {
   now: string;
 }
 
+/** 申告値を検証し、メディア種別を返す。 */
+function validateInit(p: InitUploadParams): 'photo' | 'video' {
+  const v = validateUploadDeclaration({
+    declaredMimeType: p.declaredMimeType,
+    declaredByteSize: p.declaredByteSize,
+  });
+  if (!v.ok) throw mapValidation(v.code, v.message);
+  const name = validateText(p.displayFileName, {
+    label: 'ファイル名',
+    max: DISPLAY_FILE_NAME_MAX_LENGTH,
+  });
+  if (!name.ok) throw new AppError(422, 'invalid_file_name', name.message);
+  if (
+    p.fileLastModified !== undefined &&
+    p.fileLastModified !== null &&
+    (typeof p.fileLastModified !== 'string' || Number.isNaN(Date.parse(p.fileLastModified)))
+  ) {
+    throw new AppError(422, 'invalid_last_modified', 'ファイルの更新日時が不正です。');
+  }
+  return v.kind;
+}
+
 /**
  * 単一PUTアップロードを開始する。
  * @returns mediaId と 署名付きPUT URL
@@ -67,15 +92,11 @@ export async function initSingleUpload(
   p: InitUploadParams,
 ): Promise<{ mediaId: string; uploadUrl: string }> {
   const access = await authorizeUpload(ctx, p.albumId, p.userId);
-  const v = validateUploadDeclaration({
-    declaredMimeType: p.declaredMimeType,
-    declaredByteSize: p.declaredByteSize,
-  });
-  if (!v.ok) throw mapValidation(v.code, v.message);
+  const kind = validateInit(p);
 
   const mediaId = ulid();
   const ext = extFromMime(p.declaredMimeType);
-  const media: Media = buildPendingMedia(mediaId, p, v.kind, ext);
+  const media: Media = buildPendingMedia(mediaId, p, kind, ext);
   await putJsonIfAbsent(ctx.metaBucket, metaKeys.media(p.albumId, mediaId), media);
   await createMediaLocator(ctx.metaBucket, mediaId, {
     albumId: p.albumId,
@@ -88,26 +109,23 @@ export async function initSingleUpload(
     key: mediaKeys.original(p.albumId, mediaId, ext),
     contentType: p.declaredMimeType,
     contentLength: p.declaredByteSize,
-    expiresIn: SIGNED_URL_TTL_SECONDS.original, // 単一PUTは短めで十分
+    expiresIn: UPLOAD_URL_TTL_SECONDS.single, // 参照用(5分)とは別管理（要件4-15）
   });
   return { mediaId, uploadUrl };
 }
 
 /**
  * マルチパートアップロードを開始する。
- * @param partCount 分割数（クライアントが算出）
+ * @param partCount 分割数（クライアントが算出）。申告サイズと S3 の最小パートサイズから上限を検証する。
  */
 export async function initMultipartUpload(
   ctx: AppContext,
   p: InitUploadParams & { partCount: number },
 ): Promise<MultipartInit> {
   const access = await authorizeUpload(ctx, p.albumId, p.userId);
-  const v = validateUploadDeclaration({
-    declaredMimeType: p.declaredMimeType,
-    declaredByteSize: p.declaredByteSize,
-  });
-  if (!v.ok) throw mapValidation(v.code, v.message);
-  if (p.partCount < 1 || p.partCount > 10000) {
+  const kind = validateInit(p);
+  const maxParts = Math.min(10000, Math.ceil(p.declaredByteSize / MULTIPART_MIN_PART_BYTES));
+  if (!Number.isInteger(p.partCount) || p.partCount < 1 || p.partCount > maxParts) {
     throw new AppError(422, 'invalid_part_count', 'パート数が不正です。');
   }
 
@@ -121,7 +139,7 @@ export async function initMultipartUpload(
     contentType: p.declaredMimeType,
   });
 
-  const media: Media = { ...buildPendingMedia(mediaId, p, v.kind, ext), uploadId };
+  const media: Media = { ...buildPendingMedia(mediaId, p, kind, ext), uploadId };
   await putJsonIfAbsent(ctx.metaBucket, metaKeys.media(p.albumId, mediaId), media);
   await createMediaLocator(ctx.metaBucket, mediaId, {
     albumId: p.albumId,
@@ -135,30 +153,42 @@ export async function initMultipartUpload(
     key,
     uploadId,
     partNumbers,
-    expiresIn: UPLOAD_URL_TTL,
+    expiresIn: UPLOAD_URL_TTL_SECONDS.part,
   });
   return { mediaId, uploadId, partUrls };
 }
 
-/** パート署名URLを再発行する（期限切れ対策）。 */
+/** パート署名URLを再発行する（期限切れ対策）。アップロード中のメディアのみ。 */
 export async function reissuePartUrls(
   ctx: AppContext,
   p: { mediaId: string; uploadId: string; userId: string; partNumbers: number[] },
 ): Promise<{ partNumber: number; url: string }[]> {
   const media = await loadOwnedUploadingMedia(ctx, p.mediaId, p.uploadId, p.userId);
+  if (media.status !== 'uploading') {
+    throw new AppError(409, 'not_uploading', 'このアップロードは既に終了しています。');
+  }
+  if (
+    !Array.isArray(p.partNumbers) ||
+    p.partNumbers.length === 0 ||
+    p.partNumbers.length > 10000 ||
+    !p.partNumbers.every((n) => Number.isInteger(n) && n >= 1 && n <= 10000)
+  ) {
+    throw new AppError(422, 'invalid_part_numbers', 'パート番号が不正です。');
+  }
   const key = mediaKeys.original(media.albumId, media.mediaId, media.originalExt);
   return getPartUploadUrls({
     bucket: ctx.mediaBucket,
     key,
     uploadId: p.uploadId,
     partNumbers: p.partNumbers,
-    expiresIn: UPLOAD_URL_TTL,
+    expiresIn: UPLOAD_URL_TTL_SECONDS.part,
   });
 }
 
 /**
- * マルチパートを完了する。
- * ListParts で合計サイズを検証し、申告超過・上限超過を拒否してから Complete。
+ * マルチパートを完了する（冪等）。
+ * サーバが ListParts で各パートの ETag とサイズを取得し、合計サイズが申告と一致することを検証してから
+ * CompleteMultipartUpload する（クライアント申告の ETag は使わない）。
  * 完了後は status=validating に進める（実検証はS3イベントのサムネイルLambdaが行う）。
  */
 export async function completeUpload(
@@ -167,45 +197,57 @@ export async function completeUpload(
     mediaId: string;
     uploadId: string;
     userId: string;
-    parts: { partNumber: number; etag: string }[];
     now: string;
   },
 ): Promise<void> {
-  const loc = await resolveMediaLocatorOrThrow(ctx, p.mediaId);
-  await authorizeUpload(ctx, loc.albumId, p.userId);
-  const mediaRec = await getJsonOrThrow<Media>(
-    ctx.metaBucket,
-    metaKeys.media(loc.albumId, p.mediaId),
-  );
-  const media = mediaRec.value;
-  if (media.uploadId !== p.uploadId) {
-    throw new AppError(409, 'upload_mismatch', 'アップロードIDが一致しません。');
-  }
+  const media = await loadOwnedUploadingMedia(ctx, p.mediaId, p.uploadId, p.userId);
+  // 既に完了・進行済み（二重実行）なら冪等に成功扱い
+  if (media.status !== 'uploading') return;
 
   const key = mediaKeys.original(media.albumId, media.mediaId, media.originalExt);
-  const total = await sumUploadedParts(ctx.mediaBucket, key, p.uploadId);
+  const parts = await listUploadedParts(ctx.mediaBucket, key, p.uploadId);
+  const total = parts.reduce((sum, part) => sum + part.size, 0);
   if (total > media.declaredByteSize) {
     throw new AppError(413, 'too_large', 'アップロードサイズが申告を超えています。');
+  }
+  if (parts.length === 0 || total !== media.declaredByteSize) {
+    throw new AppError(422, 'size_mismatch', 'アップロードが完了していないか、サイズが申告と一致しません。');
   }
 
   await completeMultipartUpload({
     bucket: ctx.mediaBucket,
     key,
     uploadId: p.uploadId,
-    parts: p.parts,
+    parts: parts.map((part) => ({ partNumber: part.partNumber, etag: part.etag })),
   });
 
-  if (!canTransition(media.status, 'validating')) {
-    // 既に進んでいる等。冪等に成功扱い
-    return;
+  // S3イベント処理が先に状態を進めている場合があるため、uploading のときだけ進める（単調性）
+  await advanceToValidating(ctx, media.albumId, media.mediaId, p.now);
+}
+
+/** uploading → validating を ETag 条件付きで行う。競合時は読み直し、既に進んでいれば何もしない。 */
+async function advanceToValidating(
+  ctx: AppContext,
+  albumId: string,
+  mediaId: string,
+  now: string,
+): Promise<void> {
+  for (let attempt = 0; attempt < MAX_RETRY; attempt++) {
+    const rec = await getJsonOrThrow<Media>(ctx.metaBucket, metaKeys.media(albumId, mediaId));
+    if (rec.value.status !== 'uploading' || !canTransition(rec.value.status, 'validating')) return;
+    try {
+      await putJsonIfMatch(
+        ctx.metaBucket,
+        metaKeys.media(albumId, mediaId),
+        { ...rec.value, status: 'validating', updatedAt: now },
+        rec.etag,
+      );
+      return;
+    } catch (err) {
+      if (err instanceof ConflictError && attempt < MAX_RETRY - 1) continue;
+      throw err;
+    }
   }
-  const updated: Media = { ...media, status: 'validating', updatedAt: p.now };
-  await putJsonIfMatch(
-    ctx.metaBucket,
-    metaKeys.media(media.albumId, p.mediaId),
-    updated,
-    mediaRec.etag,
-  );
 }
 
 // ---- helpers ----
@@ -244,24 +286,20 @@ function mapValidation(code: string, message: string): AppError {
   return new AppError(422, code, message);
 }
 
-async function resolveMediaLocatorOrThrow(
-  ctx: AppContext,
-  mediaId: string,
-): Promise<{ albumId: string }> {
-  const loc = await resolveMediaLocator(ctx.metaBucket, mediaId);
-  if (!loc) throw new AppError(404, 'not_found', 'メディアが見つかりません。');
-  return loc;
-}
-
 async function loadOwnedUploadingMedia(
   ctx: AppContext,
   mediaId: string,
   uploadId: string,
   userId: string,
 ): Promise<Media> {
-  const loc = await resolveMediaLocatorOrThrow(ctx, mediaId);
+  const loc = await resolveMediaLocator(ctx.metaBucket, mediaId);
+  if (!loc) throw new AppError(404, 'not_found', 'メディアが見つかりません。');
   await authorizeUpload(ctx, loc.albumId, userId);
   const rec = await getJsonOrThrow<Media>(ctx.metaBucket, metaKeys.media(loc.albumId, mediaId));
+  // アップロードの継続・完了は開始した本人のみ
+  if (rec.value.createdBy !== userId) {
+    throw new AppError(403, 'forbidden', 'このアップロードを操作する権限がありません。');
+  }
   if (rec.value.uploadId !== uploadId) {
     throw new AppError(409, 'upload_mismatch', 'アップロードIDが一致しません。');
   }

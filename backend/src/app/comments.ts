@@ -1,33 +1,45 @@
 // コメントのユースケース（app層）。requirements 要件6 に準拠。
-//  - listComments: 対象の閲覧認可 → スレッド整形（墓標・子全滅の表示ルール）
+//  - listComments: 対象の閲覧認可 → root 単位でページング → スレッド整形（墓標・子全滅の表示ルール）
 //  - postComment: 閲覧認可 → 2階層固定 → 保存＋comment-locator（保存は生値、XSSは表示時エスケープ）
 //  - deleteComment: 投稿者/管理者のみ → 親=墓標・子=非表示（非破壊）
 //  - 対象メディアが deleting 以降なら一覧非表示・新規投稿拒否
 
 import {
+  COMMENT_BODY_MAX_LENGTH,
+  COMMENT_ROOTS_PAGE_SIZE,
   ulid,
   type Comment,
+  type CommentListResponse,
   type CommentTargetType,
+  type CommentThread,
   type Media,
+  type User,
 } from '@photo-album/shared';
 import {
   getJson,
   putJsonIfMatch,
   putJsonIfAbsent,
   listJson,
+  listSubPrefixes,
   metaKeys,
 } from '../repo/index.js';
 import {
   createCommentLocator,
   resolveCommentLocator,
 } from '../repo/locator.js';
-import { buildThreads, resolveRootCommentId, markDeleted, type ThreadView } from '../domain/comment.js';
-import { canDeleteComment } from '../domain/authz.js';
+import { buildThreads, resolveRootCommentId, markDeleted } from '../domain/comment.js';
+import { canDeleteComment, isGroupAdmin } from '../domain/authz.js';
+import { validateText } from '../domain/validation.js';
 import type { AppContext } from './context.js';
 import { AppError, notFoundOrForbidden, forbidden } from './errors.js';
 import { authorizeAlbumView, authorizeMediaView, type AlbumAccess } from './authorize.js';
 
-const BODY_MAX_LENGTH = 2000;
+/** 対象種別の検証。 */
+function assertTargetType(value: unknown): asserts value is CommentTargetType {
+  if (value !== 'album' && value !== 'media') {
+    throw new AppError(422, 'invalid_target', 'コメントの対象が不正です。');
+  }
+}
 
 /** 対象(album/media)の閲覧認可と、メディア対象時の可視状態チェック。 */
 async function authorizeTarget(
@@ -36,6 +48,8 @@ async function authorizeTarget(
   targetId: string,
   userId: string,
 ): Promise<AlbumAccess> {
+  assertTargetType(targetType);
+  if (typeof targetId !== 'string' || targetId.length === 0) throw notFoundOrForbidden();
   if (targetType === 'album') {
     return authorizeAlbumView(ctx, targetId, userId);
   }
@@ -56,26 +70,62 @@ function isMediaHidden(media: Media): boolean {
   );
 }
 
-/** コメント一覧（スレッド整形）。 */
+/** 他人のコメントを削除できるか（グループ管理者。要件6-9・暫定）。 */
+function canModerate(access: AlbumAccess, userId: string): boolean {
+  return access.album.value.ownerType === 'group' && !!access.group && isGroupAdmin(access.group, userId);
+}
+
+/**
+ * コメント一覧（root 単位でページング、要件6-12）。
+ * キー comments/{type}/{id}/{rootId}/{commentId}.json の rootId 階層を Delimiter で列挙するため、
+ * root は投稿日時順（ULID順）に並ぶ。各 root 内は buildThreads が投稿日時順に並べる。
+ */
 export async function listComments(
   ctx: AppContext,
   targetType: CommentTargetType,
   targetId: string,
   userId: string,
-): Promise<ThreadView[]> {
-  await authorizeTarget(ctx, targetType, targetId, userId);
-  const comments = await listJson<Comment>(
-    ctx.metaBucket,
-    metaKeys.commentTargetPrefix(targetType, targetId),
+  opts?: { pageToken?: string; pageSize?: number },
+): Promise<CommentListResponse> {
+  const access = await authorizeTarget(ctx, targetType, targetId, userId);
+  const page = await listSubPrefixes(ctx.metaBucket, metaKeys.commentTargetPrefix(targetType, targetId), {
+    maxKeys: opts?.pageSize ?? COMMENT_ROOTS_PAGE_SIZE,
+    ...(opts?.pageToken ? { continuationToken: opts.pageToken } : {}),
+  });
+
+  const threads: CommentThread[] = [];
+  for (const rootPrefix of page.prefixes) {
+    const comments = await listJson<Comment>(ctx.metaBucket, rootPrefix);
+    threads.push(...buildThreads(comments));
+  }
+
+  // 表示名（投稿者・墓標の元投稿者を含む）
+  const authorIds = new Set<string>();
+  for (const t of threads) {
+    authorIds.add(t.root.authorUserId);
+    for (const c of t.children) authorIds.add(c.authorUserId);
+  }
+  const authors: Record<string, string> = {};
+  await Promise.all(
+    [...authorIds].map(async (id) => {
+      const u = await getJson<User>(ctx.metaBucket, metaKeys.user(id));
+      authors[id] = u?.value.displayName ?? '(不明)';
+    }),
   );
-  return buildThreads(comments);
+
+  return {
+    threads,
+    authors,
+    canModerate: canModerate(access, userId),
+    ...(page.nextToken ? { nextToken: page.nextToken } : {}),
+  };
 }
 
 export interface PostCommentInput {
   targetType: CommentTargetType;
   targetId: string;
   body: string;
-  /** 返信先コメントID（任意）。 */
+  /** 返信先コメントID（任意）。root でも子でもよい（子への返信も同一 root 直下に格納）。 */
   replyToCommentId?: string | null;
 }
 
@@ -88,10 +138,14 @@ export async function postComment(
 ): Promise<Comment> {
   await authorizeTarget(ctx, input.targetType, input.targetId, userId);
 
-  const body = input.body;
-  if (body.length === 0 || body.length > BODY_MAX_LENGTH) {
-    throw new AppError(422, 'invalid_comment', `コメントは1〜${BODY_MAX_LENGTH}文字で入力してください。`);
-  }
+  // 長さ上限・制御文字・空文字のみ検証。保存は入力値のまま（要件6-10）
+  const v = validateText(input.body, {
+    label: 'コメント',
+    max: COMMENT_BODY_MAX_LENGTH,
+    multiline: true,
+  });
+  if (!v.ok) throw new AppError(422, 'invalid_comment', v.message);
+  const body = v.value;
 
   // 返信先の解決（同一root。孫を作らない）
   let replyTo: Pick<Comment, 'commentId' | 'rootCommentId'> | null = null;
@@ -110,7 +164,7 @@ export async function postComment(
     targetType: input.targetType,
     targetId: input.targetId,
     rootCommentId,
-    replyToCommentId: input.replyToCommentId ?? null,
+    replyToCommentId: replyTo ? replyTo.commentId : null,
     body, // 保存は生値（XSSは表示時にエスケープ）
     status: 'active',
     authorUserId: userId,

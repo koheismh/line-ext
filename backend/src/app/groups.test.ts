@@ -1,74 +1,39 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { mockClient } from 'aws-sdk-client-mock';
-import {
-  GetObjectCommand,
-  PutObjectCommand,
-} from '@aws-sdk/client-s3';
 import { s3 } from '../repo/s3Client.js';
+import { installMemoryS3, type MemoryS3 } from '../testing/memoryS3.js';
 import {
   createGroup,
   getGroupDetail,
   issueInvite,
+  listInvites,
   revokeInvite,
   acceptInvite,
+  listGroups,
 } from './groups.js';
 import { AppError } from './errors.js';
 import { metaKeys, sha256Hex } from '../repo/keys.js';
-import type { User } from '@photo-album/shared';
+import type { Group, User } from '@photo-album/shared';
 
-const s3mock = mockClient(s3);
 const ctx = { metaBucket: 'meta', mediaBucket: 'media' };
-
-/**
- * インメモリS3。キー→JSON文字列。
- * 条件付き書き込み(IfNoneMatch:* / IfMatch)を簡易再現する。
- */
-let store: Map<string, { body: string; etag: string }>;
-let etagSeq: number;
-
-function setupMock() {
-  store = new Map();
-  etagSeq = 0;
-
-  s3mock.reset();
-
-  s3mock.on(GetObjectCommand).callsFake((input) => {
-    const rec = store.get(input.Key as string);
-    if (!rec) {
-      throw Object.assign(new Error('NoSuchKey'), { name: 'NoSuchKey' });
-    }
-    return {
-      Body: { transformToString: async () => rec.body },
-      ETag: `"${rec.etag}"`,
-    };
-  });
-
-  s3mock.on(PutObjectCommand).callsFake((input) => {
-    const key = input.Key as string;
-    const existing = store.get(key);
-    if (input.IfNoneMatch === '*' && existing) {
-      throw Object.assign(new Error('PreconditionFailed'), { name: 'PreconditionFailed' });
-    }
-    if (input.IfMatch) {
-      const want = String(input.IfMatch).replaceAll('"', '');
-      if (!existing || existing.etag !== want) {
-        throw Object.assign(new Error('PreconditionFailed'), {
-          $metadata: { httpStatusCode: 412 },
-        });
-      }
-    }
-    const etag = `e${++etagSeq}`;
-    store.set(key, { body: String(input.Body), etag });
-    return { ETag: `"${etag}"` };
-  });
-}
+let mem: MemoryS3;
+let store: MemoryS3['store'];
 
 function seedUser(userId: string, displayName: string) {
   const u: User = { userId, displayName, sessionVersion: 0, createdAt: '2026-01-01T00:00:00Z' };
-  store.set(metaKeys.user(userId), { body: JSON.stringify(u), etag: `u-${userId}` });
+  mem.put(metaKeys.user(userId), u);
 }
 
-beforeEach(setupMock);
+/** グループ正本にメンバーを直接追加する（テスト用）。 */
+function addMember(groupId: string, userId: string) {
+  const g = mem.get(metaKeys.group(groupId)) as Group;
+  g.memberUserIds.push(userId);
+  mem.put(metaKeys.group(groupId), g);
+}
+
+beforeEach(() => {
+  mem = installMemoryS3(s3);
+  store = mem.store;
+});
 
 describe('createGroup', () => {
   it('作成者が管理者兼メンバー、user-groups も作られる', async () => {
@@ -80,9 +45,20 @@ describe('createGroup', () => {
     expect(store.has(metaKeys.userGroup('u1', g.groupId))).toBe(true);
   });
 
-  it('空名・長すぎる名を拒否', async () => {
+  it('空名・長すぎる名・文字列以外を拒否', async () => {
     await expect(createGroup(ctx, 'u1', '   ', 'now')).rejects.toBeInstanceOf(AppError);
     await expect(createGroup(ctx, 'u1', 'x'.repeat(51), 'now')).rejects.toBeInstanceOf(AppError);
+    await expect(createGroup(ctx, 'u1', undefined, 'now')).rejects.toBeInstanceOf(AppError);
+  });
+});
+
+describe('listGroups', () => {
+  it('所属グループを返し、インデックスの残骸は正本照合で除外する', async () => {
+    const mine = await createGroup(ctx, 'u1', 'うち', 'now');
+    const other = await createGroup(ctx, 'u2', 'よそ', 'now');
+    mem.put(metaKeys.userGroup('u1', other.groupId), { groupId: other.groupId }); // 残骸
+    const groups = await listGroups(ctx, 'u1');
+    expect(groups).toEqual([{ groupId: mine.groupId, name: 'うち', isAdmin: true }]);
   });
 });
 
@@ -99,7 +75,7 @@ describe('getGroupDetail', () => {
   });
 });
 
-describe('issueInvite / revokeInvite', () => {
+describe('issueInvite / listInvites / revokeInvite', () => {
   it('管理者は発行でき、トークンのハッシュがキーになる（平文は保存しない）', async () => {
     const g = await createGroup(ctx, 'admin', 'fam', '2026-01-01T00:00:00Z');
     const invite = await issueInvite(ctx, g.groupId, 'admin', Date.now());
@@ -111,26 +87,49 @@ describe('issueInvite / revokeInvite', () => {
     }
   });
 
-  it('非管理者の発行は403', async () => {
+  it('非管理者の発行・一覧は403、非メンバーは404', async () => {
     const g = await createGroup(ctx, 'admin', 'fam', '2026-01-01T00:00:00Z');
-    // member を手動で追加
-    const key = metaKeys.group(g.groupId);
-    const cur = JSON.parse(store.get(key)!.body);
-    cur.memberUserIds.push('member');
-    store.set(key, { body: JSON.stringify(cur), etag: 'e-mod' });
-
+    addMember(g.groupId, 'member');
     await expect(issueInvite(ctx, g.groupId, 'member', Date.now())).rejects.toSatisfy(
       (e: unknown) => e instanceof AppError && e.status === 403,
     );
+    await expect(listInvites(ctx, g.groupId, 'member', Date.now())).rejects.toSatisfy(
+      (e: unknown) => e instanceof AppError && e.status === 403,
+    );
+    await expect(issueInvite(ctx, g.groupId, 'stranger', Date.now())).rejects.toSatisfy(
+      (e: unknown) => e instanceof AppError && e.status === 404,
+    );
   });
 
-  it('失効は冪等、失効後は受け入れ不可', async () => {
+  it('有効な招待だけが一覧に出て、失効すると一覧から消え受け入れ不可になる（冪等）', async () => {
     const g = await createGroup(ctx, 'admin', 'fam', '2026-01-01T00:00:00Z');
     const invite = await issueInvite(ctx, g.groupId, 'admin', Date.now());
-    await revokeInvite(ctx, g.groupId, invite.inviteId, 'admin', '2026-01-02T00:00:00Z');
-    await revokeInvite(ctx, g.groupId, invite.inviteId, 'admin', '2026-01-02T00:00:00Z'); // 冪等
+    const expired = await issueInvite(ctx, g.groupId, 'admin', Date.now() - 8 * 24 * 60 * 60 * 1000);
+    const listed = await listInvites(ctx, g.groupId, 'admin', Date.now());
+    expect(listed.map((i) => i.inviteId)).toEqual([invite.inviteId]);
+    expect(listed.map((i) => i.inviteId)).not.toContain(expired.inviteId);
+    expect(JSON.stringify(listed)).not.toContain(invite.token); // 平文は返さない
+
+    await revokeInvite(ctx, invite.inviteId, 'admin', '2026-01-02T00:00:00Z');
+    await revokeInvite(ctx, invite.inviteId, 'admin', '2026-01-02T00:00:00Z'); // 冪等
+    expect(await listInvites(ctx, g.groupId, 'admin', Date.now())).toEqual([]);
     await expect(acceptInvite(ctx, invite.token, 'u2', Date.now())).rejects.toSatisfy(
       (e: unknown) => e instanceof AppError && e.status === 410,
+    );
+  });
+
+  it('失効は招待の正本からグループを解決する。非メンバーは404、非管理者は403', async () => {
+    const g = await createGroup(ctx, 'admin', 'fam', '2026-01-01T00:00:00Z');
+    addMember(g.groupId, 'member');
+    const invite = await issueInvite(ctx, g.groupId, 'admin', Date.now());
+    await expect(revokeInvite(ctx, invite.inviteId, 'stranger', 'now')).rejects.toSatisfy(
+      (e: unknown) => e instanceof AppError && e.status === 404,
+    );
+    await expect(revokeInvite(ctx, invite.inviteId, 'member', 'now')).rejects.toSatisfy(
+      (e: unknown) => e instanceof AppError && e.status === 403,
+    );
+    await expect(revokeInvite(ctx, 'no-such-invite', 'admin', 'now')).rejects.toSatisfy(
+      (e: unknown) => e instanceof AppError && e.status === 404,
     );
   });
 });
@@ -142,18 +141,21 @@ describe('acceptInvite', () => {
 
     const r1 = await acceptInvite(ctx, invite.token, 'u2', Date.now());
     expect(r1.groupId).toBe(g.groupId);
-    const group1 = JSON.parse(store.get(metaKeys.group(g.groupId))!.body);
+    const group1 = mem.get(metaKeys.group(g.groupId)) as Group;
     expect(group1.memberUserIds).toContain('u2');
     expect(store.has(metaKeys.userGroup('u2', g.groupId))).toBe(true);
 
     // 二重受け入れ（冪等）: メンバーは重複しない
     await acceptInvite(ctx, invite.token, 'u2', Date.now());
-    const group2 = JSON.parse(store.get(metaKeys.group(g.groupId))!.body);
+    const group2 = mem.get(metaKeys.group(g.groupId)) as Group;
     expect(group2.memberUserIds.filter((x: string) => x === 'u2')).toHaveLength(1);
   });
 
   it('不正トークンは404', async () => {
     await expect(acceptInvite(ctx, 'bogus', 'u2', Date.now())).rejects.toSatisfy(
+      (e: unknown) => e instanceof AppError && e.status === 404,
+    );
+    await expect(acceptInvite(ctx, undefined, 'u2', Date.now())).rejects.toSatisfy(
       (e: unknown) => e instanceof AppError && e.status === 404,
     );
   });

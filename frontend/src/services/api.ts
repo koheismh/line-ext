@@ -4,8 +4,14 @@
 import type {
   ApiError,
   Album,
+  AlbumListItem,
+  Comment,
+  CommentListResponse,
   Group,
-  MediaListItem,
+  GroupSummary,
+  InviteSummary,
+  MediaPage,
+  MeResponse,
   MultipartInit,
   OwnerType,
   SignedUrlKind,
@@ -21,6 +27,11 @@ export class ApiClientError extends Error {
     this.status = status;
     this.code = body.code;
   }
+}
+
+/** 画面に出す利用者向けメッセージ（APIエラーはサーバの説明、それ以外は既定文）。 */
+export function errorMessage(err: unknown, fallback = '通信に失敗しました。時間をおいて再度お試しください。'): string {
+  return err instanceof ApiClientError ? err.message : fallback;
 }
 
 async function request<T>(
@@ -42,7 +53,7 @@ async function request<T>(
 
   const data = await safeJson(res);
   if (!res.ok) {
-    const err = (data ?? { code: 'unknown', message: '不明なエラー' }) as ApiError;
+    const err = (data ?? { code: 'unknown', message: '不明なエラーが発生しました。' }) as ApiError;
     throw new ApiClientError(res.status, err);
   }
   return data as T;
@@ -61,10 +72,14 @@ async function safeJson(res: Response): Promise<unknown> {
 // ---- 各API ----
 
 export const api = {
-  me: () => request<{ userId: string }>('GET', '/api/me'),
+  me: () => request<MeResponse>('GET', '/api/me'),
+
+  auth: {
+    logout: () => request<{ ok: true }>('POST', '/api/auth/logout'),
+  },
 
   groups: {
-    list: () => request<{ groups: Group[] }>('GET', '/api/groups'),
+    list: () => request<{ groups: GroupSummary[] }>('GET', '/api/groups'),
     create: (name: string) => request<Group>('POST', '/api/groups', { name }),
     detail: (groupId: string) =>
       request<{ group: Group; members: { userId: string; displayName: string }[] }>(
@@ -76,21 +91,26 @@ export const api = {
         'POST',
         `/api/groups/${encodeURIComponent(groupId)}/invites`,
       ),
-    revokeInvite: (groupId: string, inviteId: string) =>
-      request<void>('POST', `/api/invites/${encodeURIComponent(inviteId)}/revoke`, { groupId }),
+    invites: (groupId: string) =>
+      request<{ invites: InviteSummary[] }>(
+        'GET',
+        `/api/groups/${encodeURIComponent(groupId)}/invites`,
+      ),
+    revokeInvite: (inviteId: string) =>
+      request<void>('POST', `/api/invites/${encodeURIComponent(inviteId)}/revoke`),
     acceptInvite: (token: string) =>
       request<{ groupId: string }>('POST', '/api/invites/accept', { token }),
   },
 
   albums: {
-    list: () => request<{ albums: Album[] }>('GET', '/api/albums'),
+    list: () => request<{ albums: AlbumListItem[] }>('GET', '/api/albums'),
     create: (input: { ownerType: OwnerType; ownerId: string; title: string; description?: string }) =>
       request<Album>('POST', '/api/albums', input),
     get: (albumId: string) => request<Album>('GET', `/api/albums/${encodeURIComponent(albumId)}`),
     update: (albumId: string, input: { title?: string; description?: string; coverMediaId?: string | null }) =>
       request<Album>('PATCH', `/api/albums/${encodeURIComponent(albumId)}`, input),
     media: (albumId: string, pageToken?: string) =>
-      request<{ items: MediaListItem[]; nextToken?: string }>(
+      request<MediaPage>(
         'GET',
         `/api/albums/${encodeURIComponent(albumId)}/media${pageToken ? `?pageToken=${encodeURIComponent(pageToken)}` : ''}`,
       ),
@@ -127,11 +147,12 @@ export const api = {
         `/api/media/${encodeURIComponent(mediaId)}/uploads/${encodeURIComponent(uploadId)}/parts`,
         { partNumbers },
       ),
-    complete: (mediaId: string, uploadId: string, parts: { partNumber: number; etag: string }[]) =>
+    /** 完了。パートの ETag・サイズはサーバが ListParts で取得・検証する。 */
+    complete: (mediaId: string, uploadId: string) =>
       request<void>(
         'POST',
         `/api/media/${encodeURIComponent(mediaId)}/uploads/${encodeURIComponent(uploadId)}/complete`,
-        { parts },
+        {},
       ),
   },
 
@@ -146,16 +167,20 @@ export const api = {
         'DELETE',
         `/api/media/${encodeURIComponent(mediaId)}`,
       ),
+    reprocess: (mediaId: string) =>
+      request<void>('POST', `/api/media/${encodeURIComponent(mediaId)}/reprocess`),
   },
 
   comments: {
-    list: (targetType: 'album' | 'media', targetId: string) =>
-      request<{ threads: unknown[] }>(
+    list: (targetType: 'album' | 'media', targetId: string, pageToken?: string) =>
+      request<CommentListResponse>(
         'GET',
-        `/api/comments?targetType=${targetType}&targetId=${encodeURIComponent(targetId)}`,
+        `/api/comments?targetType=${targetType}&targetId=${encodeURIComponent(targetId)}${
+          pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ''
+        }`,
       ),
     post: (input: { targetType: 'album' | 'media'; targetId: string; body: string; replyToCommentId?: string | null }) =>
-      request('POST', '/api/comments', input),
+      request<Comment>('POST', '/api/comments', input),
     remove: (commentId: string) =>
       request<void>('DELETE', `/api/comments/${encodeURIComponent(commentId)}`),
   },

@@ -19,8 +19,12 @@ export const metaKeys = {
   group: (groupId: string) => `groups/${groupId}.json`,
   invite: (token: string) => `invites/${sha256Hex(token)}.json`,
   inviteByHash: (tokenHash: string) => `invites/${tokenHash}.json`,
+  /** グループ別の招待一覧（検索用インデックス。正本は invites/）。管理者の失効操作に使う。 */
+  groupInvite: (groupId: string, inviteId: string) => `group-invites/${groupId}/${inviteId}.json`,
+  groupInvitesPrefix: (groupId: string) => `group-invites/${groupId}/`,
   album: (ownerType: OwnerType, ownerId: string, albumId: string) =>
     `albums/${ownerType}/${ownerId}/${albumId}.json`,
+  albumsPrefix: (ownerType: OwnerType, ownerId: string) => `albums/${ownerType}/${ownerId}/`,
   albumLocator: (albumId: string) => `album-locator/${albumId}.json`,
   media: (albumId: string, mediaId: string) => `media/${albumId}/${mediaId}.json`,
   mediaPrefix: (albumId: string) => `media/${albumId}/`,

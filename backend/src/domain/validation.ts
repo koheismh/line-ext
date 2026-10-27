@@ -51,7 +51,7 @@ export function validateUploadDeclaration(
         '対応していないファイル形式です。写真はJPEG/PNG/WebP、動画はMP4またはMOV(H.264)をご利用ください。',
     };
   }
-  if (!Number.isFinite(input.declaredByteSize) || input.declaredByteSize <= 0) {
+  if (!Number.isInteger(input.declaredByteSize) || input.declaredByteSize <= 0) {
     return { ok: false, code: 'invalid_size', message: 'ファイルサイズが不正です。' };
   }
   const limit = kind === 'photo' ? MAX_PHOTO_BYTES : MAX_VIDEO_BYTES;
@@ -77,4 +77,47 @@ export function isLargeUpload(byteSizes: number[]): boolean {
   const total =
     byteSizes.length === 1 ? byteSizes[0]! : byteSizes.reduce((a, b) => a + b, 0);
   return total >= LARGE_UPLOAD_THRESHOLD_BYTES;
+}
+
+// ---- 利用者入力文字列の検証（要件6-10: 長さ上限・制御文字・空文字のみ検証。HTMLエスケープはしない） ----
+
+/** 改行・タブ以外の制御文字（複数行入力で許可しないもの）。 */
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS_MULTILINE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
+/** 1行入力で許可しない制御文字（改行・タブも不可）。 */
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS_SINGLE_LINE = /[\u0000-\u001f\u007f]/;
+
+export interface TextRule {
+  /** 利用者向けメッセージに使う項目名。 */
+  label: string;
+  /** 最大文字数。 */
+  max: number;
+  /** 空（空白のみを含む）を許可するか。 */
+  allowEmpty?: boolean;
+  /** 改行を許可するか（コメント本文・説明など）。 */
+  multiline?: boolean;
+}
+
+export type TextValidationResult = { ok: true; value: string } | { ok: false; message: string };
+
+/**
+ * 利用者入力文字列を検証する（純粋関数）。
+ * 値は加工せずに返す（トリムするかは呼び出し側で決める）。
+ */
+export function validateText(value: unknown, rule: TextRule): TextValidationResult {
+  if (typeof value !== 'string') {
+    return { ok: false, message: `${rule.label}が不正です。` };
+  }
+  if (!rule.allowEmpty && value.trim().length === 0) {
+    return { ok: false, message: `${rule.label}を入力してください。` };
+  }
+  if (value.length > rule.max) {
+    return { ok: false, message: `${rule.label}は${rule.max}文字以内で入力してください。` };
+  }
+  const forbidden = rule.multiline ? CONTROL_CHARS_MULTILINE : CONTROL_CHARS_SINGLE_LINE;
+  if (forbidden.test(value)) {
+    return { ok: false, message: `${rule.label}に使用できない文字が含まれています。` };
+  }
+  return { ok: true, value };
 }

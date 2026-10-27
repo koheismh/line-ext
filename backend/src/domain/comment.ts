@@ -2,7 +2,7 @@
 // design.md「コメント」「Correctness Properties」に準拠。
 // 階層は root + children の2階層のみ。孫は作らない。
 
-import type { Comment } from '@photo-album/shared';
+import type { Comment, CommentThread } from '@photo-album/shared';
 
 /** コメントが root か。 */
 export function isRoot(c: Pick<Comment, 'commentId' | 'rootCommentId'>): boolean {
@@ -44,12 +44,8 @@ export function markDeleted(c: Comment, deletedAt: string): Comment {
  * - root が墓標でも、表示可能な子が1件以上あれば墓標として表示する
  * - root が墓標で表示可能な子が0件なら、その root ごと非表示にする
  */
-export interface ThreadView {
-  root: Comment;
-  /** 墓標の root を表示するか（子がある場合 true）。 */
-  showRoot: boolean;
-  children: Comment[];
-}
+/** スレッド表示の型はフロントと共有する（shared/api.ts の CommentThread）。 */
+export type ThreadView = CommentThread;
 
 export function buildThreads(comments: Comment[]): ThreadView[] {
   const roots = comments

@@ -11,6 +11,8 @@ export interface RuntimeConfig {
   allowedOrigin: string;
   /** LINE コールバックURL。 */
   lineCallbackUrl: string;
+  /** 削除ジョブを投入するSQSキューURL（未設定時は定期掃除の再投入に任せる）。 */
+  deletionQueueUrl: string;
   /** 秘密（SSMから取得）。 */
   secrets: Secrets;
 }
@@ -34,6 +36,7 @@ export async function loadRuntimeConfig(
     app: loadAppContext(env),
     allowedOrigin: env.ALLOWED_ORIGIN ?? '',
     lineCallbackUrl: env.LINE_CALLBACK_URL ?? '',
+    deletionQueueUrl: env.DELETION_QUEUE_URL ?? '',
     secrets,
   };
 }
