@@ -89,6 +89,44 @@ async function probeVideoCodec(url: string): Promise<string | null | undefined> 
  * FFmpeg で冒頭付近の表示可能なフレームを JPEG で取り出す。
  * 先頭が黒いフェードイン対策として 1 秒目から thumbnail フィルタで代表フレームを選ぶ。短い動画は 0 秒目で再試行。
  */
+/**
+ * 写真を FFmpeg で縮小JPEGサムネイルに変換する。
+ * - 長辺を PREVIEW_MAX_EDGE に収める（拡大はしない）
+ * - EXIFの向きを自動適用し、出力メタデータは付けない（位置情報を残さない）
+ */
+async function makePhotoThumbnail(url: string): Promise<Buffer> {
+  if (!existsSync(FFMPEG_PATH)) {
+    throw new Error('FFmpeg が未配備です（FFMPEG_LAYER_ARN を設定して再デプロイしてください）。');
+  }
+  const { stdout } = await execFileAsync(
+    FFMPEG_PATH,
+    [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-i',
+      url,
+      '-vf',
+      // 長辺512に収める（拡大しない）。偶数制約を避けるため -1 ではなく比率維持スケール。
+      `scale='min(${PREVIEW_MAX_EDGE},iw)':'min(${PREVIEW_MAX_EDGE},ih)':force_original_aspect_ratio=decrease`,
+      '-frames:v',
+      '1',
+      '-f',
+      'image2',
+      '-vcodec',
+      'mjpeg',
+      '-q:v',
+      '4',
+      'pipe:1',
+    ],
+    { maxBuffer: 64 * 1024 * 1024, encoding: 'buffer' },
+  );
+  if (!stdout || stdout.length === 0) {
+    throw new Error('写真サムネイルの生成に失敗しました。');
+  }
+  return stdout as Buffer;
+}
+
 async function extractVideoFrame(url: string): Promise<Buffer> {
   if (!existsSync(FFMPEG_PATH)) {
     throw new Error('FFmpeg が未配備です（FFMPEG_LAYER_ARN を設定して再デプロイし、再処理してください）。');
@@ -163,18 +201,13 @@ export function createMediaProcessor(mediaBucket: string): MediaProcessor {
       const previewKey = mediaKeys.preview(media.albumId, media.mediaId);
 
       let output: Buffer;
+      const inputUrl = await originalReadUrl(mediaBucket, originalKey);
       if (media.kind === 'photo') {
-        // 動的import（SharpはLambda実行環境のLinuxネイティブバイナリを使用）
-        const sharp = (await import('sharp')).default;
-        const obj = await s3.send(new GetObjectCommand({ Bucket: mediaBucket, Key: originalKey }));
-        const input = await obj.Body!.transformToByteArray();
-        output = await sharp(Buffer.from(input))
-          .rotate() // EXIFの向きを反映
-          .resize(PREVIEW_MAX_EDGE, PREVIEW_MAX_EDGE, { fit: 'inside', withoutEnlargement: true })
-          .jpeg({ quality: 80 }) // withMetadata() を呼ばないため EXIF（位置情報含む）は出力されない
-          .toBuffer();
+        // 写真も FFmpeg で縮小JPEG化する（sharp Layer 不要）。
+        // EXIFの向きは自動反映され、出力JPEGにEXIF（位置情報）は含めない。
+        output = await makePhotoThumbnail(inputUrl);
       } else {
-        output = await extractVideoFrame(await originalReadUrl(mediaBucket, originalKey));
+        output = await extractVideoFrame(inputUrl);
       }
 
       await s3.send(
