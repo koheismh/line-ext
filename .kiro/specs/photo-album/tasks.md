@@ -223,4 +223,21 @@
   - 論点B（要件8-10 招待制）: LINE アカウントがあれば誰でもログインでき、個人アルバムに容量上限なくアップロードできる。新規登録を招待トークン保持者に限る／LINE チャネルを「開発中」のまま運用する／許可リスト、のいずれかを決める
   - 未対応（要件8-11）: ユーザー・グループごとの総保管容量の上限は未実装（Budgets 通知とスロットリングのみ）
   - 未対応（要件5-10）: EXIF 撮影日時（capturedAt）の抽出は未実装（null のまま）
-  - 未検証（実機・実環境）: 実S3での署名付きPUT/パートアップロード（チェックサム設定・Content-Type 署名）、FFmpeg/ffprobe Layer での動画プレビュー、sharp Layer での写真プレビュー、`nodejs24.x` での実行、iOS Safari の `accept` 指定時の HEIC→JPEG 変換
+  - 未検証（実機・実環境）: iOS Safari の `accept` 指定時の HEIC→JPEG 変換
+
+- [x] 20. 本番デプロイと実機動作確認（2026-10-31〜11-01）
+  - AWSアカウント `045780514530` / 東京(`ap-northeast-1`) に `cdk bootstrap` → `cdk deploy --all`（Storage/Processing/AuthApi/Delivery の4スタック）
+  - 秘密情報は SSM SecureString に投入し、Lambda 実行時に `@aws-sdk/client-ssm` で取得（環境変数にはパス名のみ。CloudFormation/環境変数に平文を残さない）
+  - アプリURL: `https://d3gshsyo8qdxa8.cloudfront.net`（CloudFront + OAC、`/api/*` は API Gateway へ）。APP_ORIGIN で CORS/コールバック/CSRFオリジンを実ドメインに反映
+  - フロントを `vite build` → 静的フロントS3へ `aws s3 sync` → CloudFront invalidation
+  - FFmpeg Lambda Layer を CloudShell で作成（johnvansickle 静的ビルド、S3経由で publish-layer-version）→ `FFMPEG_LAYER_ARN` を設定して Processing 再デプロイ
+  - 写真プレビューは sharp をやめ FFmpeg(mjpeg, scale) に統一（sharp Layer 不要化）
+  - LINE id_token は既定で HS256（チャネルシークレット署名）。alg に応じて HS256/ES256 を切り替えて検証するよう修正
+  - 実機検証済み: LINEログイン（start→LINE→callback→セッション発行）、アルバム作成、写真アップロード→FFmpegプレビュー生成→サムネイル表示→ready、動画アップロード→再生、原本表示
+  - _注: LINEログインチャネルは「開発中」のため現状は権限保持者のみログイン可（論点B）。一般公開には「公開」への切替が必要_
+
+- [ ] 21. 本番運用に向けた残項目（任意）
+  - [ ] LINEログインチャネルを「公開(Published)」に切替（他ユーザーのログインを許可する場合）
+  - [ ] ユーザー/グループ総保管容量の上限実装（要件8-11、現状は Budgets 通知＋スロットリングのみ）
+  - [ ] EXIF 撮影日時(capturedAt)抽出（要件5-10、現状 null）
+  - [ ] sharp 依存の整理（コードから不使用になったため package.json から除去可）
