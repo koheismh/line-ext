@@ -9,7 +9,7 @@ LINEログインした利用者が、本人または所属グループ内だけ�
 ```
 shared/    フロント・バックエンド共有の型・定数・ULID
 backend/   ドメイン(domain) → ストレージ(repo) → ユースケース(app) → HTTP(handlers) → 認証(auth)
-frontend/  React + Vite。pages / components / features/upload / services / store
+frontend/  React + Vite。pages / components（ui=見た目の部品）/ styles（デザイントークン）/ features/upload / services / store
 infra/     AWS CDK。StorageStack / ProcessingStack / AuthApiStack / DeliveryStack
 ```
 
@@ -25,6 +25,22 @@ npm run lint       # ESLint
 - フロント開発: `npm --workspace @photo-album/frontend run dev`（`/api` はバックエンドへプロキシ）
 - フロントビルド: `npm --workspace @photo-album/frontend run build`
 - CDK合成: `npm --workspace @photo-album/infra run synth`
+
+## デザインの変更方法（フロント）
+
+見た目の値（色・書体・角丸・影・余白）は `frontend/src/styles/tokens.css` に集めている。画面や部品には色や角丸を直接書かず、このファイルの変数だけを参照する。
+
+| 変えたいもの | 編集する場所 |
+|---|---|
+| 色・書体・角丸・影・余白 | `frontend/src/styles/tokens.css`。「2. 役割」の変数を変える（例はファイル冒頭のコメント） |
+| ボタン・カードなど部品の形 | `frontend/src/components/ui/*.module.css` |
+| 画面ごとの並べ方 | `frontend/src/pages/*.module.css`、`frontend/src/components/*.module.css` |
+| アプリ名・ロゴの絵文字 | `frontend/src/brand.ts`。ブラウザのタブや LINE のリンクプレビューに出る名称は `frontend/index.html` の `<title>` |
+| スマホのブラウザ上部の色・タブのアイコン | `frontend/index.html` の `theme-color`、`frontend/public/favicon.svg` |
+
+- 画面は `frontend/src/components/ui`（Button / Card / Alert / Modal / Page など）を組み合わせて作る。新しい画面でも `style={{ ... }}` で色を直接書かない。
+- CSS は CSS Modules（`*.module.css`、Vite 標準）。CSS フレームワークや外部の Web フォントは使わない（依存と通信量を増やさないため）。iPhone・Mac では丸ゴシック、それ以外の端末では標準のゴシック体で表示される。
+- 例: 太い枠線と固い影をやめて柔らかい見た目にするなら、tokens.css で `--border-width: 1px;`・`--color-border: var(--palette-ink-300);` とし、`--shadow-pop`・`--shadow-pop-hover`・`--shadow-pop-lg` を `var(--shadow-soft)` にする。
 
 ## 受け入れテスト例とのトレーサビリティ
 

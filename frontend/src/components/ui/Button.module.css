@@ -1,0 +1,111 @@
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: var(--tap-size);
+  padding: var(--space-2) var(--space-4);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-pill);
+  box-shadow: var(--shadow-pop);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-bold);
+  line-height: 1.2;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    transform var(--duration-fast) var(--easing-pop),
+    box-shadow var(--duration-fast) ease,
+    background-color var(--duration-fast) ease;
+}
+
+@media (hover: hover) {
+  .button:hover:not(:disabled) {
+    transform: translate(-2px, -2px);
+    box-shadow: var(--shadow-pop-hover);
+  }
+}
+
+/* 押したときに影の位置まで沈む */
+.button:active:not(:disabled) {
+  transform: translate(3px, 3px);
+  box-shadow: none;
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+  box-shadow: none;
+}
+
+.icon {
+  font-size: 1.15em;
+  line-height: 1;
+}
+
+/* ---- 色の役割 ---- */
+.primary {
+  background-color: var(--color-primary);
+  color: var(--color-on-primary);
+}
+
+.secondary {
+  background-color: var(--color-secondary);
+  color: var(--color-on-secondary);
+}
+
+.outline {
+  background-color: var(--color-surface);
+  color: var(--color-text);
+}
+
+.ghost {
+  border-color: transparent;
+  background-color: transparent;
+  box-shadow: none;
+  color: var(--color-text);
+}
+
+@media (hover: hover) {
+  .ghost:hover:not(:disabled) {
+    transform: none;
+    background-color: var(--color-surface-muted);
+    box-shadow: none;
+  }
+}
+
+.ghost:active:not(:disabled) {
+  transform: none;
+  background-color: var(--color-surface-muted);
+}
+
+.danger {
+  background-color: var(--color-danger);
+  color: var(--color-on-danger);
+}
+
+.line {
+  background-color: var(--color-line);
+  color: var(--color-on-line);
+}
+
+/* ---- 大きさ ---- */
+.sm {
+  min-height: 36px;
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--font-size-sm);
+}
+
+.lg {
+  min-height: 56px;
+  padding: var(--space-3) var(--space-5);
+  font-size: var(--font-size-lg);
+}
+
+.block {
+  display: flex;
+  width: 100%;
+}

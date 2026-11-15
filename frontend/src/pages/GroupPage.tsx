@@ -1,14 +1,22 @@
-// グループページ。詳細・メンバー一覧・招待URL発行と有効な招待の失効（管理者のみ, 要件2-3/2-8/2-9）。
+// グループページ。メンバー一覧・招待URL発行と有効な招待の失効（管理者のみ, 要件2-3/2-8/2-9）。
 import { useCallback, useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import type { Group, InviteSummary } from '@photo-album/shared';
 import { api, errorMessage } from '../services/api.js';
 import { useSession } from '../store/session.js';
-
-function formatDate(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('ja-JP', { dateStyle: 'short', timeStyle: 'short' });
-}
+import { formatDateTime } from '../lib/format.js';
+import {
+  Alert,
+  Avatar,
+  Badge,
+  Button,
+  Card,
+  CardTitle,
+  EmptyState,
+  Loading,
+  Page,
+} from '../components/ui/index.js';
+import styles from './GroupPage.module.css';
 
 export function GroupPage() {
   const { groupId = '' } = useParams();
@@ -17,6 +25,7 @@ export function GroupPage() {
   const [members, setMembers] = useState<{ userId: string; displayName: string }[]>([]);
   const [invites, setInvites] = useState<InviteSummary[]>([]);
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const isAdmin = !!group && !!userId && group.adminUserIds.includes(userId);
@@ -45,6 +54,7 @@ export function GroupPage() {
       // 招待URL（LINEで開かれたときに外部ブラウザへ誘導するため openExternalBrowser=1 を付与, 要件10-2）
       const base = `${window.location.origin}/invite?token=${encodeURIComponent(res.token)}`;
       setInviteUrl(`${base}&openExternalBrowser=1`);
+      setCopied(false);
       await refresh();
     } catch (err) {
       setError(errorMessage(err));
@@ -66,64 +76,84 @@ export function GroupPage() {
     if (!inviteUrl) return;
     try {
       await navigator.clipboard.writeText(inviteUrl);
+      setCopied(true);
     } catch {
-      // クリップボードが使えない環境では表示されたURLを手動でコピーしてもらう
+      // クリップボードが使えない環境では、表示されたURLを手動でコピーしてもらう
     }
   }
 
-  return (
-    <main>
-      <p>
-        <Link to="/albums">← アルバム・グループ一覧</Link>
-      </p>
-      <h1>{group?.name ?? 'グループ'}</h1>
-      {error && <p role="alert">{error}</p>}
+  if (!group && !error) return <Loading />;
 
-      <section aria-labelledby="members">
-        <h2 id="members">メンバー（{members.length}人）</h2>
-        <ul>
-          {members.map((m) => (
-            <li key={m.userId}>
-              {m.displayName}
-              {group?.adminUserIds.includes(m.userId) && '（管理者）'}
-            </li>
-          ))}
-        </ul>
-      </section>
+  return (
+    <Page
+      title={group?.name ?? 'グループ'}
+      emoji="👥"
+      back={{ to: '/albums', label: 'アルバム・グループ一覧' }}
+    >
+      {error && <Alert tone="danger">{error}</Alert>}
+
+      {group && (
+        <Card as="section" aria-labelledby="members">
+          <CardTitle id="members" emoji="🙌">
+            メンバー <Badge>{members.length}人</Badge>
+          </CardTitle>
+          <ul className={styles.members}>
+            {members.map((m) => (
+              <li key={m.userId} className={styles.member}>
+                <Avatar name={m.displayName} seed={m.userId} />
+                <span className={styles.memberName}>{m.displayName}</span>
+                {group.adminUserIds.includes(m.userId) && <Badge tone="secondary">管理者</Badge>}
+                {m.userId === userId && <Badge tone="info">自分</Badge>}
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
 
       {isAdmin && (
-        <section aria-labelledby="invites">
-          <h2 id="invites">招待</h2>
-          <button type="button" onClick={() => void issue()}>
+        <Card as="section" tone="accent" aria-labelledby="invites">
+          <CardTitle id="invites" emoji="💌">
+            招待
+          </CardTitle>
+          <p className={styles.muted}>
+            招待URLを LINE などで送ると、受け取った人がログインしてこのグループに参加できます（7日間有効）。
+          </p>
+          <Button variant="primary" icon="✉️" onClick={() => void issue()}>
             招待URLを発行
-          </button>
+          </Button>
+
           {inviteUrl && (
-            <p>
-              このURLを招待したい人にだけ共有してください（7日間有効。URLは今だけ表示されます）:
-              <br />
-              <code style={{ wordBreak: 'break-all' }}>{inviteUrl}</code>{' '}
-              <button type="button" onClick={() => void copy()}>
-                コピー
-              </button>
-            </p>
+            <div className={styles.inviteBox}>
+              <p className={styles.inviteNote}>
+                このURLを招待したい人にだけ送ってください。URLは今だけ表示されます。
+              </p>
+              <code className={styles.inviteUrl}>{inviteUrl}</code>
+              <Button size="sm" variant="secondary" icon={copied ? '✅' : '📋'} onClick={() => void copy()}>
+                {copied ? 'コピーしました' : 'コピー'}
+              </Button>
+            </div>
           )}
-          <h3>有効な招待</h3>
+
+          <h3 className={styles.subTitle}>有効な招待</h3>
           {invites.length === 0 ? (
-            <p>有効な招待はありません。</p>
+            <EmptyState emoji="📭" title="有効な招待はありません" />
           ) : (
-            <ul>
+            <ul className={styles.invites}>
               {invites.map((inv) => (
-                <li key={inv.inviteId}>
-                  発行: {formatDate(inv.createdAt)} / 期限: {formatDate(inv.expiresAt)}{' '}
-                  <button type="button" onClick={() => void revoke(inv.inviteId)}>
+                <li key={inv.inviteId} className={styles.invite}>
+                  <span className={styles.inviteDates}>
+                    <span>発行: {formatDateTime(inv.createdAt)}</span>
+                    <span>期限: {formatDateTime(inv.expiresAt)}</span>
+                  </span>
+                  <Button size="sm" variant="outline" onClick={() => void revoke(inv.inviteId)}>
                     失効させる
-                  </button>
+                  </Button>
                 </li>
               ))}
             </ul>
           )}
-        </section>
+        </Card>
       )}
-    </main>
+    </Page>
   );
 }

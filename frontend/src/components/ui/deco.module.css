@@ -1,0 +1,33 @@
+/* 装飾色（tokens.css の --color-deco-1〜6）。アバターや表紙のないアルバムに使う。 */
+.deco1,
+.deco2,
+.deco3,
+.deco4,
+.deco5,
+.deco6 {
+  color: var(--color-on-deco);
+}
+
+.deco1 {
+  background-color: var(--color-deco-1);
+}
+
+.deco2 {
+  background-color: var(--color-deco-2);
+}
+
+.deco3 {
+  background-color: var(--color-deco-3);
+}
+
+.deco4 {
+  background-color: var(--color-deco-4);
+}
+
+.deco5 {
+  background-color: var(--color-deco-5);
+}
+
+.deco6 {
+  background-color: var(--color-deco-6);
+}

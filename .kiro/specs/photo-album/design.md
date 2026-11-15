@@ -75,6 +75,7 @@ LINEログインした利用者が、個人またはグループのアルバム�
 | レイヤ | 採用 | 補足 |
 |---|---|---|
 | フロント | React + TypeScript + Vite | スマホ優先レスポンシブ |
+| スタイル | CSS Modules + CSS 変数（デザイントークン） | 色・書体・角丸・影・余白は `frontend/src/styles/tokens.css` に集約（パレット → 役割の2段構成）。画面・部品は役割の変数だけを参照する。CSS フレームワーク・外部 Web フォントは使わない（依存と通信量を増やさない） |
 | ルーティング | React Router | 追加課金なし |
 | 状態管理 | React Context + hooks | 必要が明確になれば Zustand を検討 |
 | ローカル保存 | IndexedDB | 保留中アップロードの記録（要件9） |
@@ -107,18 +108,30 @@ shared/          共有型（フロントと共有するJSON型・エラー型�
 ### フロント 主要コンポーネント
 
 ```
+styles/
+  tokens.css        デザイントークン（色・書体・角丸・影・余白・動き）。見た目の変更はまずここ
+  base.css          要素の基本スタイル（本文・見出し・入力欄・フォーカス表示・動きを減らす設定）
 pages/
+  LoginPage         未ログイン時。招待トークンの引き継ぎ・ログイン失敗理由の表示（要件1-10, 1-13）
   HomePage          ログイン後トップ。保留中アップロード通知（要件9）
-  AlbumListPage     所有主体別アルバム一覧
-  AlbumDetailPage   メディアグリッド（プレビューのみ）
-  MediaViewer       原本表示/動画再生（権限確認後の署名付きURL）
-  GroupPage         グループ作成・招待URL発行
+  AlbumListPage     所有主体別アルバム一覧・アルバム/グループ作成
+  AlbumDetailPage   メディアグリッド（プレビューのみ）・アップロード・編集・コメント
+  GroupPage         メンバー一覧・招待URL発行/失効
+  InvitePage        招待の明示参加
+components/
+  ui/               見た目の部品（Button / Card / Alert / Badge / Avatar / Field / Modal / Page / ProgressBar / EmptyState / Loading）
+  AppLayout         ヘッダー（ナビ）・フッター（表示名・ログアウト）
+  MediaViewer       原本表示/動画再生（権限確認後の署名付きURL）。モーダル（<dialog>）
+  MediaGrid / AlbumGrid / UploadPanel / CommentPanel
 features/
   upload/           ファイル選択・容量判定・回線ガード・マルチパート制御・保留記録
-  comments/         2階層コメント表示・投稿・削除
 services/api/       型付きAPIクライアント（shared型を利用）
-store/              Context（セッション・保留アップロード）
+store/              Context（セッション）
+brand.ts            アプリ名・ロゴの絵文字（表示用）
 ```
+
+- 画面には色・角丸などの値を直接書かない（`style={{ ... }}` で色を指定しない）。部品は CSS Modules、値は tokens.css の「役割」の変数を参照する。
+- モーダルはブラウザ標準の `<dialog>`（`showModal()`）を使い、背面の操作不可・フォーカスの閉じ込め・Esc で閉じる動作をブラウザに任せる。表示状態は呼び出し側の state を正とする。
 
 ---
 

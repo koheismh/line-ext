@@ -150,7 +150,13 @@ export function useUpload(albumId: string) {
     setState({ phase: 'idle', progress: 0, results: [] });
   }, [albumId, queued, state.reason]);
 
-  return { state, start, approve, defer };
+  /** confirm を閉じる（今回選んだファイルはアップロードも保留もしない）。 */
+  const cancel = useCallback(() => {
+    setQueued([]);
+    setState((s) => (s.phase === 'confirm' ? { phase: 'idle', progress: 0, results: [] } : s));
+  }, []);
+
+  return { state, start, approve, defer, cancel };
 }
 
 /** 1ファイルをアップロードする（単一PUT or マルチパート）。 */

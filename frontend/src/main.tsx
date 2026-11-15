@@ -2,6 +2,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
+import './styles/index.css'; // デザイントークンと全体の基本スタイル（最初に読み込む）
 import { App } from './App.js';
 import { SessionProvider } from './store/session.js';
 

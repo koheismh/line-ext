@@ -3,10 +3,9 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useSession } from '../store/session.js';
 import { listPending, removePending, type PendingUpload } from '../features/upload/pendingStore.js';
-
-function formatMb(bytes: number): string {
-  return `${Math.max(1, Math.round(bytes / 1024 / 1024))}MB`;
-}
+import { formatMb } from '../lib/format.js';
+import { Badge, Button, Card, CardTitle, Page, buttonClassName } from '../components/ui/index.js';
+import styles from './HomePage.module.css';
 
 export function HomePage() {
   const { displayName } = useSession();
@@ -30,34 +29,54 @@ export function HomePage() {
   }
 
   return (
-    <main>
-      <h1>ホーム</h1>
-      {displayName && <p>{displayName} さん、こんにちは。</p>}
-
+    <Page title={`こんにちは、${displayName ?? ''} さん`} emoji="👋">
       {pending.length > 0 && (
-        <section aria-label="保留中アップロード" style={{ border: '1px solid #c06', padding: 12 }}>
-          <strong>Wi-Fi待ちの保留アップロードが {pending.length} 件あります</strong>
-          <p>
-            「再開する」からアルバムを開き、同じファイルを選び直すとアップロードを再開します
-            （ファイル名・サイズ・更新日時で同じファイルか照合します）。この記録はこのブラウザにだけ保存されています。
+        <Card as="section" tone="secondary" aria-labelledby="pending-title">
+          <CardTitle id="pending-title" emoji="📶">
+            Wi-Fi待ちのアップロード <Badge tone="primary">{pending.length}件</Badge>
+          </CardTitle>
+          <p className={styles.muted}>
+            「再開する」からアルバムを開き、同じファイルを選び直すとアップロードを再開します（ファイル名・サイズ・更新日時で照合します）。この記録はこのブラウザにだけ保存されています。
           </p>
-          <ul>
+          <ul className={styles.pendingList}>
             {pending.map((p) => (
-              <li key={p.id}>
-                {p.fileName}（{formatMb(p.byteSize)}）{' '}
-                <Link to={`/albums/${encodeURIComponent(p.albumId)}`}>再開する</Link>{' '}
-                <button type="button" onClick={() => void cancel(p.id)}>
-                  取り消す
-                </button>
+              <li key={p.id} className={styles.pendingItem}>
+                <span className={styles.fileIcon} aria-hidden="true">
+                  {p.mimeType.startsWith('video/') ? '🎞️' : '🖼️'}
+                </span>
+                <span className={styles.fileName}>
+                  {p.fileName}
+                  <span className={styles.fileSize}>{formatMb(p.byteSize)}</span>
+                </span>
+                <span className={styles.pendingActions}>
+                  <Link
+                    to={`/albums/${encodeURIComponent(p.albumId)}`}
+                    className={buttonClassName({ variant: 'primary', size: 'sm' })}
+                  >
+                    再開する
+                  </Link>
+                  <Button size="sm" variant="ghost" onClick={() => void cancel(p.id)}>
+                    取り消す
+                  </Button>
+                </span>
               </li>
             ))}
           </ul>
-        </section>
+        </Card>
       )}
 
-      <nav aria-label="ホームのメニュー">
-        <Link to="/albums">アルバム・グループ一覧へ</Link>
-      </nav>
-    </main>
+      <Link to="/albums" className={styles.bigLink}>
+        <span className={styles.bigLinkEmoji} aria-hidden="true">
+          📚
+        </span>
+        <span className={styles.bigLinkText}>
+          <strong>アルバム・グループ</strong>
+          <span>写真や動画を見たり、追加したりできます</span>
+        </span>
+        <span className={styles.bigLinkArrow} aria-hidden="true">
+          →
+        </span>
+      </Link>
+    </Page>
   );
 }

@@ -1,0 +1,126 @@
+.panel,
+.compact {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.compact {
+  padding-top: var(--space-4);
+  border-top: var(--border-width) dashed var(--color-border-soft);
+}
+
+.threads {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.thread {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* 返信は左に点線を引いて1段下げる（階層は2段まで） */
+.children {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-left: 20px;
+  padding-left: var(--space-4);
+  border-left: var(--border-width) dashed var(--color-primary);
+}
+
+.comment {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  font-size: var(--font-size-sm);
+}
+
+.time {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.replyLabel {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+}
+
+/* 吹き出し */
+.bubble {
+  align-self: flex-start;
+  max-width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: 4px var(--radius-md) var(--radius-md) var(--radius-md);
+  background-color: var(--color-surface);
+  box-shadow: var(--shadow-pop);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.bubbleMine {
+  background-color: var(--color-primary-soft);
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-1);
+  margin-left: calc(-1 * var(--space-2));
+}
+
+.tombstone {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) dashed var(--color-border-soft);
+  border-radius: var(--radius-md);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  font-style: italic;
+}
+
+.more {
+  align-self: center;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.replying {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background-color: var(--color-secondary-soft);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-bold);
+}
+
+.submit {
+  align-self: flex-end;
+}

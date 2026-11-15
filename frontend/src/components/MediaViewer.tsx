@@ -1,10 +1,12 @@
-// メディアビューア。権限確認後の原本表示・動画再生・保存・削除・表紙設定・再処理。
+// メディアビューア（モーダル）。権限確認後の原本表示・動画再生・保存・削除・表紙設定・再処理。
 // 動画は再生URLの期限切れ時に自動再取得し、再生位置から続ける（要件5-8）。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { TRASH_RETENTION_DAYS, type Album, type MediaListItem } from '@photo-album/shared';
 import { api, errorMessage } from '../services/api.js';
 import { useSession } from '../store/session.js';
 import { CommentPanel } from './CommentPanel.js';
+import { Alert, Button, Loading, Modal } from './ui/index.js';
+import styles from './MediaViewer.module.css';
 
 /** ブラウザで再生できない可能性があるコーデックか（H.264 以外, 要件5-12）。 */
 function mayNotPlay(codec: string | null): boolean {
@@ -116,77 +118,93 @@ export function MediaViewer({
   }
 
   const isPoster = media.createdBy === userId;
+  const canDelete = ready || media.status === 'error'; // 処理中は24時間後に自動で失効・片付け（要件7-10, 7-11）
 
   return (
-    <div role="dialog" aria-label={`メディア「${media.displayFileName}」`} style={{ border: '1px solid #333', padding: 12 }}>
-      <button type="button" onClick={onClose}>
-        閉じる
-      </button>
-      <p>{media.displayFileName}</p>
-      {error && <p role="alert">{error}</p>}
-      {notice && <p role="status">{notice}</p>}
-
-      {!ready && (
-        <p>
-          {media.status === 'error'
-            ? media.errorReason === 'invalid_file'
-              ? 'このファイルは対応していない形式か、壊れているため表示できません。写真はJPEG/PNG/WebP、動画はMP4/MOV(H.264)をご利用ください。'
-              : 'プレビューを作成できませんでした。再処理するか、削除してアップロードし直してください。'
-            : 'アップロード後の確認処理中です。しばらくお待ちください。'}
-        </p>
-      )}
-
-      {ready && url && media.kind === 'photo' && (
-        <img src={url} alt={media.displayFileName} style={{ maxWidth: '100%' }} />
-      )}
-      {ready && url && media.kind === 'video' && (
+    <Modal
+      open
+      onClose={onClose}
+      size="lg"
+      title={
         <>
-          {mayNotPlay(media.videoCodec) && (
-            <p role="note">
-              この動画（{media.videoCodec}）はお使いのブラウザで再生できない場合があります。再生できないときは「保存」して端末で再生してください。
-            </p>
+          <span aria-hidden="true">{media.kind === 'video' ? '🎞️ ' : '🖼️ '}</span>
+          {media.displayFileName}
+        </>
+      }
+      footer={
+        <>
+          {ready && (
+            <Button icon="⬇️" onClick={() => void download()}>
+              保存
+            </Button>
           )}
-          <video
-            ref={videoRef}
-            src={url}
-            controls
-            playsInline
-            onError={() => void onVideoError()}
-            onLoadedMetadata={onLoadedMetadata}
-            style={{ maxWidth: '100%' }}
-          />
-          {playbackIssue && (
-            <p role="alert">
-              この動画を再生できませんでした。お使いのブラウザが動画の形式に対応していない可能性があります。「保存」して端末で再生してください。
-            </p>
+          {ready && media.kind === 'photo' && album.createdBy === userId && (
+            <Button variant="secondary" icon="⭐" onClick={() => void setAsCover()}>
+              表紙にする
+            </Button>
+          )}
+          {media.status === 'error' && media.errorReason === 'preview_failed' && isPoster && (
+            <Button variant="primary" icon="🔄" onClick={() => void reprocess()}>
+              再処理
+            </Button>
+          )}
+          {canDelete && (
+            <Button variant="danger" icon="🗑️" onClick={() => void remove()}>
+              削除
+            </Button>
           )}
         </>
-      )}
+      }
+    >
+      <div className={styles.body}>
+        {error && <Alert tone="danger">{error}</Alert>}
+        {notice && <Alert tone="success">{notice}</Alert>}
 
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        {ready && (
-          <button type="button" onClick={() => void download()}>
-            保存
-          </button>
+        {!ready && (
+          <Alert tone={media.status === 'error' ? 'danger' : 'info'} role="note" icon={media.status === 'error' ? '⚠️' : '⏳'}>
+            {media.status === 'error'
+              ? media.errorReason === 'invalid_file'
+                ? 'このファイルは対応していない形式か、壊れているため表示できません。写真はJPEG/PNG/WebP、動画はMP4/MOV(H.264)をご利用ください。'
+                : 'プレビューを作成できませんでした。「再処理」するか、削除してアップロードし直してください。'
+              : 'アップロード後の確認処理中です。しばらくお待ちください。'}
+          </Alert>
         )}
-        {ready && media.kind === 'photo' && album.createdBy === userId && (
-          <button type="button" onClick={() => void setAsCover()}>
-            表紙にする
-          </button>
+
+        {ready && !url && !error && <Loading />}
+
+        {ready && url && media.kind === 'photo' && (
+          <div className={styles.stage}>
+            <img src={url} alt={media.displayFileName} className={styles.media} />
+          </div>
         )}
-        {media.status === 'error' && media.errorReason === 'preview_failed' && isPoster && (
-          <button type="button" onClick={() => void reprocess()}>
-            再処理
-          </button>
+        {ready && url && media.kind === 'video' && (
+          <>
+            {mayNotPlay(media.videoCodec) && (
+              <Alert tone="warning" role="note">
+                この動画（{media.videoCodec}）はお使いのブラウザで再生できない場合があります。再生できないときは「保存」して端末で再生してください。
+              </Alert>
+            )}
+            <div className={styles.stage}>
+              <video
+                ref={videoRef}
+                src={url}
+                controls
+                playsInline
+                onError={() => void onVideoError()}
+                onLoadedMetadata={onLoadedMetadata}
+                className={styles.media}
+              />
+            </div>
+            {playbackIssue && (
+              <Alert tone="danger">
+                この動画を再生できませんでした。お使いのブラウザが動画の形式に対応していない可能性があります。「保存」して端末で再生してください。
+              </Alert>
+            )}
+          </>
         )}
-        {/* 削除できるのは ready / error のみ（処理中は24時間後に自動で失効・片付け, 要件7-10, 7-11） */}
-        {(ready || media.status === 'error') && (
-          <button type="button" onClick={() => void remove()}>
-            削除
-          </button>
-        )}
+
+        {ready && <CommentPanel targetType="media" targetId={media.mediaId} compact />}
       </div>
-      {ready && <CommentPanel targetType="media" targetId={media.mediaId} />}
-    </div>
+    </Modal>
   );
 }

@@ -1,0 +1,84 @@
+.page {
+  flex: 1;
+  width: 100%;
+  max-width: var(--content-max-width);
+  margin: 0 auto;
+  padding: var(--space-5) var(--space-4) var(--space-7);
+}
+
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 36px;
+  margin-bottom: var(--space-4);
+  padding: var(--space-1) var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background-color: var(--color-surface);
+  box-shadow: var(--shadow-pop);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  text-decoration: none;
+}
+
+.back:hover {
+  text-decoration: none;
+  background-color: var(--color-secondary-soft);
+}
+
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+}
+
+.title {
+  min-width: 0;
+  margin: 0;
+  font-size: var(--font-size-2xl);
+}
+
+.emoji {
+  display: inline-block;
+  margin-right: var(--space-2);
+}
+
+/* 蛍光ペンのマーカー。複数行でも行ごとに引く */
+.marker {
+  background-image: linear-gradient(transparent 60%, var(--color-secondary) 60%);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  padding: 0 0.15em;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.lead {
+  margin: calc(-1 * var(--space-3)) 0 var(--space-5);
+  color: var(--color-text-muted);
+  white-space: pre-wrap;
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+@media (min-width: 640px) {
+  .page {
+    padding: var(--space-6) var(--space-5) var(--space-7);
+  }
+
+  .title {
+    font-size: var(--font-size-3xl);
+  }
+}

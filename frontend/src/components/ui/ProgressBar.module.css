@@ -1,0 +1,45 @@
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.labels {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-bold);
+}
+
+.percent {
+  font-variant-numeric: tabular-nums;
+}
+
+.track {
+  height: 18px;
+  overflow: hidden;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background-color: var(--color-surface);
+}
+
+/* キャンディのしましま */
+.bar {
+  height: 100%;
+  background-color: var(--color-primary);
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0 8px,
+    var(--color-primary-soft) 8px 16px
+  );
+  background-size: 23px 100%;
+  transition: width var(--duration-base) ease;
+  animation: stripes 0.8s linear infinite;
+}
+
+@keyframes stripes {
+  to {
+    background-position: 23px 0;
+  }
+}

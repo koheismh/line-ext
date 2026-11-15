@@ -4,18 +4,19 @@ import { useCallback, useEffect, useState } from 'react';
 import { COMMENT_BODY_MAX_LENGTH, type Comment, type CommentThread } from '@photo-album/shared';
 import { api, errorMessage } from '../services/api.js';
 import { useSession } from '../store/session.js';
-
-function formatTime(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? '' : d.toLocaleString('ja-JP', { dateStyle: 'short', timeStyle: 'short' });
-}
+import { formatDateTime } from '../lib/format.js';
+import { Alert, Avatar, Badge, Button, Card, CardTitle, EmptyState, cx } from './ui/index.js';
+import styles from './CommentPanel.module.css';
 
 export function CommentPanel({
   targetType,
   targetId,
+  compact = false,
 }: {
   targetType: 'album' | 'media';
   targetId: string;
+  /** モーダル内など、カードの枠を付けずに表示する */
+  compact?: boolean;
 }) {
   const { userId } = useSession();
   const [threads, setThreads] = useState<CommentThread[]>([]);
@@ -99,90 +100,118 @@ export function CommentPanel({
   const nameOf = (id: string) => authors[id] ?? '(不明)';
   const canDelete = (c: Comment) => c.authorUserId === userId || canModerate;
 
-  /** 子への返信なら「○○さんへの返信」を表示する（要件6-4）。 */
+  /** 子への返信なら「○○ さんへの返信」を表示する（要件6-4）。 */
   function replyLabel(thread: CommentThread, c: Comment): string | null {
     if (!c.replyToCommentId || c.replyToCommentId === thread.root.commentId) return null;
     const target = thread.children.find((x) => x.commentId === c.replyToCommentId);
     return target ? `${nameOf(target.authorUserId)} さんへの返信` : '削除されたコメントへの返信';
   }
 
-  return (
-    <section aria-label="コメント">
-      <h2>コメント</h2>
-      {error && <p role="alert">{error}</p>}
+  /** 1件分の吹き出し（コンポーネントにすると再描画のたびに作り直されフォーカスが外れるため、関数で描く）。 */
+  function renderBubble(thread: CommentThread, comment: Comment, child = false) {
+    const label = child ? replyLabel(thread, comment) : null;
+    const mine = comment.authorUserId === userId;
+    return (
+      <div className={styles.comment}>
+        <Avatar name={nameOf(comment.authorUserId)} seed={comment.authorUserId} size={child ? 'sm' : 'md'} />
+        <div className={styles.main}>
+          <div className={styles.meta}>
+            <strong>{nameOf(comment.authorUserId)}</strong>
+            {mine && <Badge tone="secondary">自分</Badge>}
+            <span className={styles.time}>{formatDateTime(comment.createdAt)}</span>
+          </div>
+          {label && <span className={styles.replyLabel}>↩ {label}</span>}
+          <div className={cx(styles.bubble, mine && styles.bubbleMine)}>{comment.body}</div>
+          <div className={styles.actions}>
+            <Button size="sm" variant="ghost" onClick={() => setReplyTo(comment)}>
+              返信
+            </Button>
+            {canDelete(comment) && (
+              <Button size="sm" variant="ghost" onClick={() => void remove(comment.commentId)}>
+                削除
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
-      <ul style={{ listStyle: 'none', padding: 0 }}>
-        {threads.map((t) => (
-          <li key={t.root.commentId} style={{ marginBottom: 8 }}>
-            <div>
+  const content = (
+    <>
+      <CardTitle emoji="💬">コメント</CardTitle>
+      {error && <Alert tone="danger">{error}</Alert>}
+
+      {threads.length === 0 && !error ? (
+        <EmptyState emoji="💭" title="まだコメントはありません">
+          最初のひとことを書いてみましょう。
+        </EmptyState>
+      ) : (
+        <ul className={styles.threads}>
+          {threads.map((t) => (
+            <li key={t.root.commentId} className={styles.thread}>
               {t.root.status === 'deleted' ? (
-                <em>（削除されたコメント）</em>
+                <p className={styles.tombstone}>（削除されたコメント）</p>
               ) : (
-                <>
-                  <strong>{nameOf(t.root.authorUserId)}</strong>{' '}
-                  <small>{formatTime(t.root.createdAt)}</small>
-                  <div style={{ whiteSpace: 'pre-wrap' }}>{t.root.body}</div>
-                  <button type="button" onClick={() => setReplyTo(t.root)}>
-                    返信
-                  </button>
-                  {canDelete(t.root) && (
-                    <button type="button" onClick={() => void remove(t.root.commentId)}>
-                      削除
-                    </button>
-                  )}
-                </>
+                renderBubble(t, t.root)
               )}
-            </div>
-            <ul style={{ listStyle: 'none', paddingLeft: 16 }}>
-              {t.children.map((c) => (
-                <li key={c.commentId}>
-                  <strong>{nameOf(c.authorUserId)}</strong> <small>{formatTime(c.createdAt)}</small>
-                  {replyLabel(t, c) && <small> ・{replyLabel(t, c)}</small>}
-                  <div style={{ whiteSpace: 'pre-wrap' }}>{c.body}</div>
-                  <button type="button" onClick={() => setReplyTo(c)}>
-                    返信
-                  </button>
-                  {canDelete(c) && (
-                    <button type="button" onClick={() => void remove(c.commentId)}>
-                      削除
-                    </button>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </li>
-        ))}
-      </ul>
+              {t.children.length > 0 && (
+                <ul className={styles.children}>
+                  {t.children.map((c) => (
+                    <li key={c.commentId}>{renderBubble(t, c, true)}</li>
+                  ))}
+                </ul>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
       {nextToken && (
-        <button type="button" onClick={() => void loadMore()}>
+        <Button size="sm" className={styles.more} onClick={() => void loadMore()}>
           さらに表示
-        </button>
+        </Button>
       )}
 
-      <form onSubmit={(e) => void post(e)}>
+      <form className={styles.form} onSubmit={(e) => void post(e)}>
         {replyTo && (
-          <p>
-            {nameOf(replyTo.authorUserId)} さんに返信中…{' '}
-            <button type="button" onClick={() => setReplyTo(null)}>
+          <div className={styles.replying}>
+            <span>
+              <span aria-hidden="true">↩ </span>
+              {nameOf(replyTo.authorUserId)} さんに返信中
+            </span>
+            <Button size="sm" variant="ghost" onClick={() => setReplyTo(null)}>
               やめる
-            </button>
-          </p>
+            </Button>
+          </div>
         )}
-        <label>
+        <label className="visually-hidden" htmlFor={`comment-${targetType}-${targetId}`}>
           コメント
-          <br />
-          <textarea
-            value={body}
-            onChange={(e) => setBody(e.target.value)}
-            rows={2}
-            maxLength={COMMENT_BODY_MAX_LENGTH}
-          />
         </label>
-        <br />
-        <button type="submit" disabled={busy}>
-          投稿
-        </button>
+        <textarea
+          id={`comment-${targetType}-${targetId}`}
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          rows={2}
+          maxLength={COMMENT_BODY_MAX_LENGTH}
+          placeholder="コメントを書く…"
+        />
+        <Button type="submit" variant="primary" disabled={busy || !body.trim()} className={styles.submit}>
+          投稿する
+        </Button>
       </form>
-    </section>
+    </>
+  );
+
+  if (compact) {
+    return (
+      <section aria-label="コメント" className={styles.compact}>
+        {content}
+      </section>
+    );
+  }
+  return (
+    <Card as="section" aria-label="コメント" className={styles.panel}>
+      {content}
+    </Card>
   );
 }

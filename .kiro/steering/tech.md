@@ -4,6 +4,7 @@
 
 ## スタック
 - フロントエンド: React + TypeScript + Vite。スマホ優先のレスポンシブUI。
+- スタイル: CSS Modules + CSS 変数（デザイントークン `frontend/src/styles/tokens.css`）。画面に色・角丸などの値を直接書かず、部品は `frontend/src/components/ui/` を使う。CSS フレームワーク・外部 Web フォントは使わない。
 - ホスティング: 非公開S3（静的アセット）+ CloudFront（HTTPS、Origin Access Control）。独自ドメインは後回し。
 - API: CloudFront の `/api/*` を API Gateway HTTP API → Lambda へ転送。同一オリジンでセッションCookieを扱い、APIはキャッシュ無効。
 - 認証: LINE Login v2.1 OIDC。サーバサイド認可コードフロー（state / nonce / PKCE）。

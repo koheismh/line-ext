@@ -1,0 +1,182 @@
+/*
+ * 全体の基本スタイル（要素そのものへの指定）。
+ * 色・大きさ・角丸はすべて tokens.css の変数を使い、ここに具体的な値を書かない。
+ * 部品ごとの見た目は components/ui/*.module.css に置く。
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-base);
+  color: var(--color-text);
+  background-color: var(--color-bg);
+  /* 水玉模様 */
+  background-image: radial-gradient(var(--color-bg-pattern) 2px, transparent 2.5px);
+  background-size: 24px 24px;
+  -webkit-font-smoothing: antialiased;
+  overflow-wrap: break-word;
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0 0 var(--space-3);
+  font-family: var(--font-family-heading);
+  font-weight: var(--font-weight-heavy);
+  line-height: var(--line-height-tight);
+}
+
+h1 {
+  font-size: var(--font-size-2xl);
+}
+
+h2 {
+  font-size: var(--font-size-xl);
+}
+
+h3 {
+  font-size: var(--font-size-lg);
+}
+
+p {
+  margin: 0 0 var(--space-3);
+}
+
+/* クラスを付けたリストは、部品側で見た目を決めるので既定の余白・記号を消す */
+ul[class],
+ol[class] {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+a {
+  color: var(--color-link);
+  font-weight: var(--font-weight-bold);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.2em;
+}
+
+a:hover {
+  text-decoration-style: wavy;
+}
+
+img,
+video {
+  display: block;
+  max-width: 100%;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+/* 入力欄 */
+input:not([type='checkbox']):not([type='radio']):not([type='file']),
+select,
+textarea {
+  width: 100%;
+  min-height: var(--tap-size);
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-surface);
+  /* 16px 未満だと iPhone が入力時に画面を拡大してしまう */
+  font-size: var(--font-size-md);
+}
+
+textarea {
+  min-height: 96px;
+  resize: vertical;
+}
+
+select {
+  appearance: none;
+  padding-right: 2.5rem;
+  /* 下向きの矢印（文字色に合わせて描く） */
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position:
+    calc(100% - 20px) 50%,
+    calc(100% - 14px) 50%;
+  background-size: 6px 6px;
+  background-repeat: no-repeat;
+}
+
+::placeholder {
+  color: var(--color-text-muted);
+  opacity: 0.8;
+}
+
+:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+code {
+  padding: 0.1em 0.4em;
+  border-radius: 6px;
+  background-color: var(--color-surface-muted);
+  font-family: var(--font-family-mono);
+  font-size: 0.9em;
+  word-break: break-all;
+}
+
+::selection {
+  background-color: var(--color-secondary);
+  color: var(--color-on-secondary);
+}
+
+/* 画面には表示しないが読み上げソフトには読ませる */
+.visually-hidden {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* モーダル表示中は背面をスクロールさせない */
+html.has-modal {
+  overflow: hidden;
+}
+
+/* 動きを減らす設定の利用者にはアニメーションを止める */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

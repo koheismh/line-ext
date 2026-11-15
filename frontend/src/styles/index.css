@@ -1,0 +1,3 @@
+/* スタイルの入口。main.tsx から1回だけ読み込む。 */
+@import './tokens.css';
+@import './base.css';

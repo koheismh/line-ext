@@ -252,6 +252,16 @@
   - [x] 22.7 テスト: 新規 `app/auth.test.ts`（既存ユーザー招待なしOK / 新規招待なし拒否・未作成 / 有効招待で作成 / 2人目 invite_used / revoked・expired・invalid / 孤児claim猶予）、`groups.test.ts` に1回限り・冪等・一覧除外
   - [ ] 22.8 （実装・テスト・デプロイ済み。実機確認が残り）README・仕様更新 → `npm run typecheck/test/lint`・`cdk synth` → deploy → 実機確認（既存オーナーのログイン継続、別LINEアカウントは「テスター」登録して招待なし拒否を確認）
 
+- [ ] 23. デザイン刷新（ポップな見た目）と、デザインを変えやすい構成（実装・ローカル確認済み。フロントのデプロイと実機確認が残り）
+  - [x] 23.1 デザイントークン `frontend/src/styles/tokens.css`（パレット → 役割の2段構成。色・書体・角丸・影・余白・動き）と基本スタイル `base.css`。画面・部品は役割の変数だけを参照する
+  - [x] 23.2 見た目の部品 `frontend/src/components/ui/`（Button / Card / Alert / Badge / Avatar / Field / Modal / Page / ProgressBar / EmptyState / Loading）。CSS Modules。画面のインラインの色指定を撤去
+  - [x] 23.3 全画面を刷新（クリーム地に水玉、太い枠線とずらした影、丸ゴシック優先、絵文字、マーカー付き見出し、押すと沈むボタン）。ログイン画面を `pages/LoginPage.tsx` に分離（タスク22の招待トークン引き継ぎ・理由別メッセージは維持）
+  - [x] 23.4 ビューアと回線ガードの確認をモーダル化（`<dialog>`。Esc で閉じる・背面は操作不可）。回線ガードの確認に「やめる」（アップロードも保留もしない）を追加
+  - [x] 23.5 ヘッダー（ロゴ・ホーム/アルバム）とフッター（表示名・ログアウト）。アプリ名・ロゴは `src/brand.ts`。favicon と theme-color を追加
+  - [x] 23.6 テスト: 整形ヘルパー（`lib/format.ts`）・Modal・Button・LoginPage。モックAPI＋ヘッドレス Edge で主要画面（スマホ幅・PC幅）と、トークンの差し替えだけで見た目が変わることを目視確認
+  - [ ] 23.7 フロントのデプロイ（`vite build` → S3 sync → CloudFront invalidation）と iPhone 実機での確認（見た目・`<dialog>` の動作）
+  - _注: Android・Windows には丸ゴシックがないため標準のゴシック体で表示される。揃えたい場合は Web フォントの自己ホストを検討（初回の通信量が数百KB増える）_
+
 ## 引き継ぎメモ（別AI向け）
 
 - 作業ディレクトリ: リポジトリルート。npm workspaces: shared / backend / frontend / infra。検証: `npm run typecheck`, `npm test`, `npm run lint`, `cd infra; npx cdk synth --all`。
@@ -259,4 +269,5 @@
 - 例: `cd infra; npx cdk deploy PhotoAlbum-AuthApi-dev --require-approval never`。認証は `aws sso login` の一時認証情報。
 - フロント反映: `cd frontend; npm run build` → `aws s3 sync frontend/dist s3://<frontバケット> --delete` → `aws cloudfront create-invalidation --distribution-id <ID> --paths "/*"`（バケット名・IDは `aws cloudformation describe-stacks` で取得）。
 - LINEチャネルは「LINEログイン」種別。コールバックURLは `<APP_ORIGIN>/api/auth/line/callback`。秘密はSSM SecureString `/dev/photo-album/{cookie-secret,line-channel-id,line-channel-secret}`。
+- デザインの変更は `frontend/src/styles/tokens.css`（色・書体・角丸・影）から行う。部品は `frontend/src/components/ui/`。画面に色を直接書かない（README「デザインの変更方法」）。
 - 注意: リポジトリはPUBLIC。コミット前に秘密混入チェック（AKIA/ASIA・.env等）を行う。PowerShellは git の進捗stderrをエラー表示するが push は成功している場合がある（exit code で判断）。Docker/WSL2は使えない。
