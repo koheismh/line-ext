@@ -1,5 +1,5 @@
 // メディア検証・プレビュー生成のユースケース（app層）。requirements 要件4-7/4-8/5-1/5-4 準拠。
-// 実バイナリ処理（Sharp/FFmpeg・S3 Range取得）は MediaProcessor インターフェースに隔離し、
+// 実バイナリ処理（FFmpeg・S3 Range取得）は MediaProcessor インターフェースに隔離し、
 // ここでは状態遷移の冪等性・単調性のみを扱う（テスト可能にする）。
 
 import { type Media, type MediaErrorReason } from '@photo-album/shared';
@@ -30,7 +30,7 @@ export interface ValidationOutcome {
 }
 
 /**
- * 実バイナリ処理のアダプタ。実装は Lambda 側（Sharp/FFmpeg/S3 Range）で注入する。
+ * 実バイナリ処理のアダプタ。実装は Lambda 側（FFmpeg/S3 Range）で注入する。
  * app層はこのインターフェースにのみ依存し、テストではフェイクを渡す。
  */
 export interface MediaProcessor {

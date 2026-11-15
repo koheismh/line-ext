@@ -17,7 +17,7 @@ LINEログインした利用者が、個人またはグループのアルバム�
 - **署名付きURL**: 発行は無料、費用は転送量。用途別に期限を分け、同一メディアは有効期限内で同一URLを再利用（キャッシュ・転送量削減）。プレビュー1h / 写真原本5分 / 動画再生30分（暫定）。アップロード用は参照用と別管理で、単一PUT 15分 / マルチパートの各パート 1h（暫定、`UPLOAD_URL_TTL_SECONDS`）。
 - **S3 クライアントのチェックサム**: SDK v3 は既定でアップロードに CRC32 を付与し、署名付きURLでは空データのCRC32（`x-amz-checksum-crc32=AAAAAA==`）がURLに固定される。ブラウザ直送と両立しないため、S3 クライアントは `requestChecksumCalculation` / `responseChecksumValidation` を `WHEN_REQUIRED` にする（`repo/s3Client.ts`）。
 - **削除は非同期**: `DELETE` は `deleting` にして即時応答し、コピー〜元削除はキュー経由Lambdaで実行・自動再試行する（HTTP APIの30秒制限回避）。キューは ProcessingStack に置き、API Lambda へは URL と送信権限を渡す（Processing → AuthApi の一方向参照）。投入に失敗しても削除は受理済みとし、定期掃除（10分）が再投入する。
-- **再処理**: `error(preview_failed)` は投稿者が `POST /api/media/{mediaId}/reprocess` で再処理できる。API は原本を同じキーへ上書きコピー（`MetadataDirective=REPLACE`）して ObjectCreated を再発火させ、サムネイルLambdaが `error(preview_failed) → validating → ready | error` を行う（新しいインフラを増やさないため）。Sharp / FFmpeg の Layer を後から配備した場合の回復手段を兼ねる。
+- **再処理**: `error(preview_failed)` は投稿者が `POST /api/media/{mediaId}/reprocess` で再処理できる。API は原本を同じキーへ上書きコピー（`MetadataDirective=REPLACE`）して ObjectCreated を再発火させ、サムネイルLambdaが `error(preview_failed) → validating → ready | error` を行う（新しいインフラを増やさないため）。FFmpeg の Layer を後から配備した場合の回復手段を兼ねる。
 - **時刻順ID**: `mediaId`/`commentId` は ULID または UUIDv7 を用い、ListObjectsV2 の辞書順＝登録日時順になるようにする。
 - **回線ガードと保留管理はフロント責務**。サーバは容量・形式・権限の検証を独立して必ず行う。保留中はサーバAPIを呼ばない（mediaId を作らない）。
 
@@ -41,8 +41,7 @@ LINEログインした利用者が、個人またはグループのアルバム�
                                                      │ (ObjectCreated イベント)
                                                      ▼
                                           [サムネイル生成Lambda(TS)]
-                                           - 写真: Sharp
-                                           - 動画: FFmpeg(Lambda Layer)
+                                           - 写真・動画: FFmpeg(Lambda Layer)
 ```
 
 - ブラウザは CloudFront の単一オリジンにアクセスする。`/api/*` のみ API Gateway へ転送し、それ以外は静的フロントを返す。
@@ -82,8 +81,7 @@ LINEログインした利用者が、個人またはグループのアルバム�
 | バックエンド | Node.js LTS Lambda + TypeScript | `nodejs24.x`（`nodejs20.x` は 2026-04-30 に Lambda で非推奨）。ログ保存期間は30日（暫定） |
 | IaC | AWS CDK (TypeScript) | 全リソースをコード管理 |
 | 認証 | LINE Login v2.1 OIDC | 認可コードフロー + state/nonce/PKCE |
-| 画像処理 | Sharp | サムネイル生成Lambda |
-| 動画処理 | FFmpeg / ffprobe (Lambda Layer) | 冒頭フレーム抽出・コーデック判定。`FFMPEG_LAYER_ARN`、既定パス `/opt/bin/ffmpeg`・`/opt/bin/ffprobe` |
+| 画像・動画処理 | FFmpeg / ffprobe (Lambda Layer) | 写真の縮小JPEG化・動画の冒頭フレーム抽出・コーデック判定。`FFMPEG_LAYER_ARN`、既定パス `/opt/bin/ffmpeg`・`/opt/bin/ffprobe`（当初の Sharp は不要になり依存も削除） |
 | 秘密情報 | SSM Parameter Store SecureString | |
 
 ---
@@ -305,7 +303,7 @@ interface ApiError {
    status=validating → 実サイズ・MIME/マジックバイト(先頭Range)・動画コーデック検証
      失敗: status=error, errorReason=invalid_file（閲覧不可）
        （HEIF/AVIF の ftyp は動画として扱わない。ffprobe で映像ストリームが無い動画も invalid_file）
-     成功: Sharp(EXIF回転・メタ除去)/FFmpeg(署名付きURL入力・1秒目から thumbnail フィルタで黒フレーム回避)でプレビュー生成
+     成功: FFmpeg でプレビュー生成（署名付きURL入力。写真=縮小JPEG・メタデータ除去、動画=1秒目から thumbnail フィルタで黒フレーム回避）
            → previews/ 書き込み後に状態再確認（削除・失効済みなら ready にせず書いたプレビューを削除）→ status=ready
            → ready になったら表紙を再計算（最初の写真の自動設定）
      プレビュー生成失敗・ツール未配備: status=error, errorReason=preview_failed（投稿者が再処理可）

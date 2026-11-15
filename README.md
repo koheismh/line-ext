@@ -81,23 +81,21 @@ requirements の受け入れテスト例 → 担保する主な実装/テスト�
 | 変数 | 用途 | 既定 |
 |---|---|---|
 | `APP_ORIGIN` | 公開オリジン（CloudFront ドメイン） | なし |
-| `SHARP_LAYER_ARN` / `FFMPEG_LAYER_ARN` | 写真・動画プレビュー用 Layer | なし（プレビューは失敗扱い） |
+| `FFMPEG_LAYER_ARN` | 写真・動画プレビュー用の FFmpeg Layer | なし（プレビューは失敗扱い） |
 | `API_THROTTLE_RATE` / `API_THROTTLE_BURST` | API Gateway のスロットリング | 20 / 40 |
 | `MONTHLY_BUDGET_USD` / `BUDGET_NOTIFY_EMAIL` | 予算アラート | 20 / なし |
 
 既にデプロイ済みの環境へ反映する場合の注意: Lambda のランタイムが `nodejs24.x` に変わり、ログ出力先が保存期間30日の新しいロググループになる（旧 `/aws/lambda/...` は残る）。スタック依存は `Storage → Processing → AuthApi → Delivery`。
 
-## プレビュー（sharp / FFmpeg）の有効化
+## プレビュー（FFmpeg）の有効化
 
-サムネイル生成Lambdaは写真に `sharp`、動画に FFmpeg / ffprobe を使う。どちらもネイティブバイナリ（linux-x64）のため
+サムネイル生成Lambdaは写真・動画とも FFmpeg / ffprobe を使う。ネイティブバイナリ（linux-x64）のため
 **バンドルに含めず Lambda Layer で供給する**（開発機に WSL2/Docker が無くてもデプロイできるようにするため）。
 未供給の間、該当メディアは `error(preview_failed)` になり一般の一覧には出ない（投稿者には「再処理」ボタンが出る）。
 
-- sharp: linux-x64 の sharp を含む Layer（sharp 0.33 は Node-API のため Node 24 でも動作）
 - FFmpeg: `/opt/bin/ffmpeg` と `/opt/bin/ffprobe` を含む Layer（パスが異なる場合は Lambda の環境変数 `FFMPEG_PATH` / `FFPROBE_PATH`）。HTTPS 入力に対応したビルドが必要
 
 ```
-$env:SHARP_LAYER_ARN = "arn:aws:lambda:ap-northeast-1:<acct>:layer:sharp:<ver>"
 $env:FFMPEG_LAYER_ARN = "arn:aws:lambda:ap-northeast-1:<acct>:layer:ffmpeg:<ver>"
 cdk deploy PhotoAlbum-Processing-dev
 ```
@@ -109,7 +107,7 @@ Layer 配備前にアップロードしたメディアは、投稿者がビュ�
 - iOS Safari / LINE内ブラウザでのファイル選択時の MIME・コーデック（`accept` に対応MIMEを列挙したときの HEIC→JPEG 変換を含む）
 - 実S3への署名付きPUT・パートアップロード（チェックサム設定 `WHEN_REQUIRED` と Content-Type 署名の組み合わせ）
 - 一時認証情報で署名したURLの実効期限、500MBオブジェクトの CopyObject 所要時間（削除・失効・再処理で使用）
-- sharp/FFmpeg による実プレビュー生成とコーデック判定（Layer配備後に有効化）、`nodejs24.x` での実行
+- FFmpeg によるコーデック判定（ffprobe）、`nodejs24.x` での実行
 - 実ブラウザでの IndexedDB 保留・マルチパート並列アップロード・動画再生・Wake Lock
 
 未対応・判断待ちの事項は `.kiro/specs/photo-album/tasks.md` のタスク19を参照。

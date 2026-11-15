@@ -10,7 +10,7 @@
 - 認証: LINE Login v2.1 OIDC。サーバサイド認可コードフロー（state / nonce / PKCE）。
 - バックエンド: Lambda + TypeScript（Node.js の現行サポートLTS）。
 - メタデータ: 原則 S3 JSON。メディア: 別の非公開S3バケット。
-- サムネイル: S3アップロード完了イベント起点のLambda。写真はSharp等、動画はFFmpegをパッケージ化したLambda等で冒頭フレーム取得。
+- サムネイル: S3アップロード完了イベント起点のLambda。写真・動画とも FFmpeg（Lambda Layer）で生成する（写真は縮小JPEG、動画は冒頭フレーム）。
 - IaC: AWS CDK（TypeScript）。全リソースをコード管理。
 - 秘密情報: SSM Parameter Store SecureString 等。認証秘密鍵・LINE Channel Secret はフロントやGitに絶対渡さない。
 

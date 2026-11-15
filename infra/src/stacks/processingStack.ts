@@ -4,8 +4,8 @@
 //  - 削除は SQS 経由の非同期ワーカー（キューは AuthApiStack の API Lambda からも投入する）
 //  - 定期掃除は EventBridge スケジュール
 //  - IAM は対象バケット/プレフィックスに限定（最小権限）
-//  - Lambda コードは NodejsFunction（esbuild）でバンドル。sharp はネイティブ依存のため external とし、
-//    sharp / FFmpeg は Lambda Layer で供給する（SHARP_LAYER_ARN / FFMPEG_LAYER_ARN）。
+//  - Lambda コードは NodejsFunction（esbuild）でバンドル。写真・動画のプレビューに使う FFmpeg は
+//    ネイティブバイナリのため Lambda Layer で供給する（FFMPEG_LAYER_ARN）。
 
 import { Duration, Stack, type StackProps } from 'aws-cdk-lib';
 import type { IBucket } from 'aws-cdk-lib/aws-s3';
@@ -45,21 +45,16 @@ export class ProcessingStack extends Stack {
       MEDIA_BUCKET: mediaBucket.bucketName,
     };
 
-    // 画像・動画処理の Lambda Layer（任意）。ARN が環境変数にあればアタッチする。
-    //  - SHARP_LAYER_ARN: linux-x64 の sharp（写真プレビュー）
-    //  - FFMPEG_LAYER_ARN: /opt/bin/ffmpeg・/opt/bin/ffprobe を含む Layer（動画プレビュー・コーデック判定）
+    // 写真・動画処理の Lambda Layer。ARN が環境変数にあればアタッチする。
+    //  - FFMPEG_LAYER_ARN: /opt/bin/ffmpeg・/opt/bin/ffprobe を含む Layer（プレビュー生成・コーデック判定）
     // 未供給の間は該当メディアが error(preview_failed) になり、配備後に投稿者が再処理できる。
     const processingLayers: ILayerVersion[] = [];
-    const sharpLayerArn = process.env.SHARP_LAYER_ARN;
-    if (sharpLayerArn) {
-      processingLayers.push(LayerVersion.fromLayerVersionArn(this, 'SharpLayer', sharpLayerArn));
-    }
     const ffmpegLayerArn = process.env.FFMPEG_LAYER_ARN;
     if (ffmpegLayerArn) {
       processingLayers.push(LayerVersion.fromLayerVersionArn(this, 'FfmpegLayer', ffmpegLayerArn));
     }
 
-    // ---- サムネイル生成Lambda（Sharp / FFmpeg）----
+    // ---- サムネイル生成Lambda（FFmpeg）----
     const thumbnailFn = new NodejsFunction(this, 'ThumbnailFn', {
       runtime: LAMBDA_RUNTIME,
       entry: join(lambdaDir, 'thumbnail.ts'),
@@ -69,11 +64,7 @@ export class ProcessingStack extends Stack {
       environment: commonEnv,
       logGroup: lambdaLogGroup(this, 'ThumbnailFnLogs', config),
       ...(processingLayers.length > 0 ? { layers: processingLayers } : {}),
-      bundling: {
-        // sharp はネイティブバイナリ（Lambda=linux-x64）。開発機(Windows/WSL2無し)では
-        // Linux用バイナリを同梱できないため、バンドルから external 扱いで切り離して Layer で供給する。
-        externalModules: ['sharp', '@aws-sdk/*'],
-      },
+      bundling: { externalModules: ['@aws-sdk/*'] },
     });
     metaBucket.grantReadWrite(thumbnailFn);
     mediaBucket.grantRead(thumbnailFn, 'originals/*');

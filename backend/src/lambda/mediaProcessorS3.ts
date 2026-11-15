@@ -1,7 +1,7 @@
-// MediaProcessor の実装（Lambda側）。S3 Range取得・マジックバイト検証・Sharp/FFmpegプレビュー生成。
-//  - 写真: Sharp（Lambda Layer で供給。SHARP_LAYER_ARN）。EXIFの向きを反映し、メタデータ（位置情報等）は出力に含めない
-//  - 動画: FFmpeg/ffprobe（Lambda Layer で供給。FFMPEG_LAYER_ARN。既定パス /opt/bin/ffmpeg, /opt/bin/ffprobe）
-//    原本は丸ごと落とさず、署名付きURLを入力にして必要部分だけ読む（design: 大容量動画）
+// MediaProcessor の実装（Lambda側）。S3 Range取得・マジックバイト検証・FFmpegプレビュー生成。
+//  - 写真・動画とも FFmpeg/ffprobe（Lambda Layer で供給。FFMPEG_LAYER_ARN。既定パス /opt/bin/ffmpeg, /opt/bin/ffprobe）
+//  - 写真: 縮小JPEGにする。出力にメタデータ（位置情報等）は含めない
+//  - 動画: 冒頭付近のフレームを取り出す。原本は丸ごと落とさず、署名付きURLを入力にして必要部分だけ読む（design: 大容量動画）
 // ツールが未配備の場合はプレビュー生成を失敗させ error(preview_failed) にする（配備後に再処理できる）。
 
 import { execFile } from 'node:child_process';
@@ -86,10 +86,6 @@ async function probeVideoCodec(url: string): Promise<string | null | undefined> 
 }
 
 /**
- * FFmpeg で冒頭付近の表示可能なフレームを JPEG で取り出す。
- * 先頭が黒いフェードイン対策として 1 秒目から thumbnail フィルタで代表フレームを選ぶ。短い動画は 0 秒目で再試行。
- */
-/**
  * 写真を FFmpeg で縮小JPEGサムネイルに変換する。
  * - 長辺を PREVIEW_MAX_EDGE に収める（拡大はしない）
  * - EXIFの向きを自動適用し、出力メタデータは付けない（位置情報を残さない）
@@ -127,6 +123,10 @@ async function makePhotoThumbnail(url: string): Promise<Buffer> {
   return stdout as Buffer;
 }
 
+/**
+ * FFmpeg で冒頭付近の表示可能なフレームを JPEG で取り出す。
+ * 先頭が黒いフェードイン対策として 1 秒目から thumbnail フィルタで代表フレームを選ぶ。短い動画は 0 秒目で再試行。
+ */
 async function extractVideoFrame(url: string): Promise<Buffer> {
   if (!existsSync(FFMPEG_PATH)) {
     throw new Error('FFmpeg が未配備です（FFMPEG_LAYER_ARN を設定して再デプロイし、再処理してください）。');
@@ -203,8 +203,7 @@ export function createMediaProcessor(mediaBucket: string): MediaProcessor {
       let output: Buffer;
       const inputUrl = await originalReadUrl(mediaBucket, originalKey);
       if (media.kind === 'photo') {
-        // 写真も FFmpeg で縮小JPEG化する（sharp Layer 不要）。
-        // EXIFの向きは自動反映され、出力JPEGにEXIF（位置情報）は含めない。
+        // 写真も FFmpeg で縮小JPEG化する。出力JPEGにEXIF（位置情報）は含めない。
         output = await makePhotoThumbnail(inputUrl);
       } else {
         output = await extractVideoFrame(inputUrl);
