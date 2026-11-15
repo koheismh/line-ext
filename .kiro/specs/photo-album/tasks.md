@@ -250,7 +250,7 @@
   - [x] 22.5 `app/groups.ts`: acceptInvite を claim 化（自分なら冪等、他人は 410 invite_used）、listInvites で使用済み除外
   - [x] 22.6 frontend: LoginGate の invite 引継ぎ、reason別メッセージ、InvitePage の invite_used 表示、GroupPage の一覧反映
   - [x] 22.7 テスト: 新規 `app/auth.test.ts`（既存ユーザー招待なしOK / 新規招待なし拒否・未作成 / 有効招待で作成 / 2人目 invite_used / revoked・expired・invalid / 孤児claim猶予）、`groups.test.ts` に1回限り・冪等・一覧除外
-  - [ ] 22.8 README・仕様更新 → `npm run typecheck/test/lint`・`cdk synth` → deploy → 実機確認（既存オーナーのログイン継続、別LINEアカウントは「テスター」登録して招待なし拒否を確認）
+  - [ ] 22.8 （実装・テスト・デプロイ済み。実機確認が残り）README・仕様更新 → `npm run typecheck/test/lint`・`cdk synth` → deploy → 実機確認（既存オーナーのログイン継続、別LINEアカウントは「テスター」登録して招待なし拒否を確認）
 
 ## 引き継ぎメモ（別AI向け）
 
