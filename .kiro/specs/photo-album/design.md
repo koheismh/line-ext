@@ -178,6 +178,8 @@ interface Invite {
   groupId: string;
   expiresAt: string;     // 暫定7日
   revokedAt: string | null; // 失効時刻（管理者による失効）
+  usedBy?: string | null;   // 使用した利用者の内部ID。1回限り。未設定の旧データは未使用扱い
+  usedAt?: string | null;   // 使用時刻
   createdBy: string;
   createdAt: string;
 }
@@ -353,6 +355,20 @@ DELETE /api/media/{mediaId}
 - コールバックのエラー/キャンセルは利用者向け表示＋再試行導線に変換。
 - 2回目以降のログインで LINE 表示名を更新。
 
+### 7. 招待制の新規登録（設計確定・実装はタスク22）
+
+目的: 知らない人が勝手に使えないようにする（要件1-13, 2-12, 2-13）。LINEチャネルを「公開」にしても制限が効くよう、アプリ側で制御する。
+
+- 既存LINE identityがあれば招待なしでログイン可。新規identityは有効な招待（未使用・未失効・期限内）が必須。無い場合は user/identity を作らず `/?login_error=<reason>` へ302。
+- reason: `invite_required` / `invite_invalid` / `invite_revoked` / `invite_expired` / `invite_used`（従来の `1` は汎用エラーとして維持）。
+- 招待トークンは `/api/auth/line/start?invite=<token>` で受け、署名cookie `oauth_tx` の `OauthTx.inviteToken` に保持し callback で使う。フロント LoginGate は `/invite?token=` のとき start に `&invite=` を付与する。
+- Invite は `usedBy?` / `usedAt?`（任意。旧データは未使用扱い）。使用済み化(claim)は `putJsonIfMatch`（ETag）で行い、同時使用は片方が 409 で負ける。
+- 共通ロジックは `app/invites.ts`（evaluate / claim）。`app/auth.ts` と `app/groups.ts` が利用する（循環import回避）。
+- callback の新規登録順: 招待検証 → userId生成 → claim(usedBy=userId) → identity `putJsonIfAbsent` → user `putJsonIfAbsent`。途中失敗で「claim済みだが users/{usedBy} が無い」孤児claimになった場合、`usedAt` から5分（`ORPHAN_CLAIM_GRACE_MS`）経過後のみ再claim可（同一人物の二重コールバック競合を避けるため）。
+- `acceptInvite`: 期限/失効検証後に claim。`usedBy===自分` なら冪等OK、他人なら 410 `invite_used`。`listInvites` は使用済みを除外。
+- テスト観点: 既存ユーザー招待なしOK / 新規招待なし拒否かつ未作成 / 有効招待で作成 / 同一招待の2人目は invite_used / revoked・expired・invalid / 孤児claim猶予 / acceptInvite の1回限り・冪等・一覧除外。
+- 却下案: 許可リスト方式（運用負荷）、LINEテスター登録のみ（人追加ごとにLINE操作が必要）。
+
 ---
 
 ## Correctness Properties
@@ -426,5 +442,5 @@ DELETE /api/media/{mediaId}
 - `architecture.md` は別AI作成の原典として温存。実装の正は本 design.md と steering とする。差分があれば本書を優先（AGENTS.md もこの優先順位に合わせて更新済み）。
 - locator index 方式は MVP の S3 JSON 構成に最適化したもの。将来 DynamoDB へ段階移行する場合、locator と正本の対応をそのままテーブル化できる構造にしておく。
 - AWS SDK for JavaScript v3 の既定チェックサムが署名付きURL生成/ブラウザアップロードに影響しないか実装時に確認する。→ 確認済み（2026-10-27）。既定設定では署名付きPUT/パートURLに空データのCRC32が入るため、`WHEN_REQUIRED` に設定した。実S3での挙動は実機で確認する。
-- LINE ログインのチャネルが「開発中」のままだと権限保持者しかログインできない。公開手順に含める。
+- LINE ログインのチャネルが「開発中」のままだと権限保持者しかログインできない。公開手順に含める。ただし招待制（タスク22）の実装・デプロイ完了までは公開しない。
 - 動画の冒頭フレーム抽出は FFmpeg 失敗（破損・コーデック差・黒フレーム）を想定し、失敗時は `error(preview_failed)` で再処理可能にする。

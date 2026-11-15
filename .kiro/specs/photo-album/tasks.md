@@ -226,7 +226,7 @@
   - 未検証（実機・実環境）: iOS Safari の `accept` 指定時の HEIC→JPEG 変換
 
 - [x] 20. 本番デプロイと実機動作確認（2026-10-31〜11-01）
-  - AWSアカウント `045780514530` / 東京(`ap-northeast-1`) に `cdk bootstrap` → `cdk deploy --all`（Storage/Processing/AuthApi/Delivery の4スタック）
+  - 自分のAWSアカウント / 東京(`ap-northeast-1`) に `cdk bootstrap` → `cdk deploy --all`（Storage/Processing/AuthApi/Delivery の4スタック）
   - 秘密情報は SSM SecureString に投入し、Lambda 実行時に `@aws-sdk/client-ssm` で取得（環境変数にはパス名のみ。CloudFormation/環境変数に平文を残さない）
   - アプリURL: `https://d3gshsyo8qdxa8.cloudfront.net`（CloudFront + OAC、`/api/*` は API Gateway へ）。APP_ORIGIN で CORS/コールバック/CSRFオリジンを実ドメインに反映
   - フロントを `vite build` → 静的フロントS3へ `aws s3 sync` → CloudFront invalidation
@@ -237,7 +237,26 @@
   - _注: LINEログインチャネルは「開発中」のため現状は権限保持者のみログイン可（論点B）。一般公開には「公開」への切替が必要_
 
 - [ ] 21. 本番運用に向けた残項目（任意）
-  - [ ] LINEログインチャネルを「公開(Published)」に切替（他ユーザーのログインを許可する場合）
+  - [ ] LINEログインチャネルを「公開(Published)」に切替（**タスク22の招待制を実装・デプロイするまで公開禁止**。現状は公開すると誰でも登録できる）
   - [ ] ユーザー/グループ総保管容量の上限実装（要件8-11、現状は Budgets 通知＋スロットリングのみ）
   - [ ] EXIF 撮影日時(capturedAt)抽出（要件5-10、現状 null）
   - [ ] sharp 依存の整理（コードから不使用になったため package.json から除去可）
+
+- [ ] 22. 招待制の新規登録＋招待の1回限り化（設計: design.md 6-7 / 要件 1-13, 2-12, 2-13）
+  - [x] 22.1 `shared/src/domain.ts` の Invite に `usedBy?` / `usedAt?` を追加
+  - [ ] 22.2 `backend/src/app/invites.ts` 新規（evaluate / claim。ETag条件付き書き込み）
+  - [ ] 22.3 `app/auth.ts` の `upsertUserFromLine` を `loginOrRegisterFromLine` 化（戻り値は判別共用体: ok / 拒否reason）。孤児claim猶予5分
+  - [ ] 22.4 `handlers/authFlow.ts`: start の `invite` を `OauthTx.inviteToken` に保持、callback で reason別に `?login_error=<reason>` へ302
+  - [ ] 22.5 `app/groups.ts`: acceptInvite を claim 化（自分なら冪等、他人は 410 invite_used）、listInvites で使用済み除外
+  - [ ] 22.6 frontend: LoginGate の invite 引継ぎ、reason別メッセージ、InvitePage の invite_used 表示、GroupPage の一覧反映
+  - [ ] 22.7 テスト: 新規 `app/auth.test.ts`（既存ユーザー招待なしOK / 新規招待なし拒否・未作成 / 有効招待で作成 / 2人目 invite_used / revoked・expired・invalid / 孤児claim猶予）、`groups.test.ts` に1回限り・冪等・一覧除外
+  - [ ] 22.8 README・仕様更新 → `npm run typecheck/test/lint`・`cdk synth` → deploy → 実機確認（既存オーナーのログイン継続、別LINEアカウントは「テスター」登録して招待なし拒否を確認）
+
+## 引き継ぎメモ（別AI向け）
+
+- 作業ディレクトリ: リポジトリルート。npm workspaces: shared / backend / frontend / infra。検証: `npm run typecheck`, `npm test`, `npm run lint`, `cd infra; npx cdk synth --all`。
+- デプロイ時は必ず環境変数を設定: `$env:APP_ORIGIN="https://d3gshsyo8qdxa8.cloudfront.net"`。Processing 更新時は `$env:FFMPEG_LAYER_ARN` も設定（`aws lambda list-layer-versions --layer-name ffmpeg` で最新ARNを取得）。未設定だとCORS/コールバックが初期化、またはLayerが外れる。
+- 例: `cd infra; npx cdk deploy PhotoAlbum-AuthApi-dev --require-approval never`。認証は `aws sso login` の一時認証情報。
+- フロント反映: `cd frontend; npm run build` → `aws s3 sync frontend/dist s3://<frontバケット> --delete` → `aws cloudfront create-invalidation --distribution-id <ID> --paths "/*"`（バケット名・IDは `aws cloudformation describe-stacks` で取得）。
+- LINEチャネルは「LINEログイン」種別。コールバックURLは `<APP_ORIGIN>/api/auth/line/callback`。秘密はSSM SecureString `/dev/photo-album/{cookie-secret,line-channel-id,line-channel-secret}`。
+- 注意: リポジトリはPUBLIC。コミット前に秘密混入チェック（AKIA/ASIA・.env等）を行う。PowerShellは git の進捗stderrをエラー表示するが push は成功している場合がある（exit code で判断）。Docker/WSL2は使えない。

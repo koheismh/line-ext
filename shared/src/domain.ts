@@ -68,6 +68,13 @@ export interface Invite {
   expiresAt: string;
   /** 管理者による失効時刻。未失効は null。 */
   revokedAt: string | null;
+  /**
+   * 使用した利用者の内部ID。1回限り（1人が使ったら以後は他の人に使えない）。
+   * 未使用は null。この項目が無い旧データは未使用として扱う。
+   */
+  usedBy?: string | null;
+  /** 使用時刻。未使用は null。 */
+  usedAt?: string | null;
   createdBy: string;
   createdAt: string;
 }
