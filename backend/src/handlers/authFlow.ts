@@ -12,7 +12,7 @@ import { safeReturnPath } from '../auth/redirect.js';
 import { verifyLineIdToken } from '../auth/oidc.js';
 import {
   exchangeLineCode,
-  upsertUserFromLine,
+  loginOrRegisterFromLine,
   getSessionVersion,
   bumpSessionVersion,
 } from '../app/auth.js';
@@ -29,6 +29,8 @@ interface OauthTx {
   nonce: string;
   codeVerifier: string;
   returnTo: string;
+  /** 招待トークン（新規登録時に使う。任意）。 */
+  inviteToken?: string;
 }
 
 // 汎用の署名付きCookie（signSession は { userId, sessionVersion } 専用のため別実装）。
@@ -56,6 +58,7 @@ function verifyTx(token: string, secret: string): OauthTx | null {
     ) {
       return null;
     }
+    if (parsed.inviteToken !== undefined && typeof parsed.inviteToken !== 'string') return null;
     return parsed as OauthTx;
   } catch {
     return null;
@@ -82,10 +85,12 @@ function readCookie(event: APIGatewayProxyEventV2, name: string): string | null 
  * ログイン失敗・キャンセル時のリダイレクト（要件1-10）。
  * 画面側は login_error を見て利用者向けの説明と再試行導線を出す。戻り先が分かれば維持する。
  */
-function loginErrorRedirect(cfg: RuntimeConfig, returnTo = '/'): HttpResponse {
+function loginErrorRedirect(cfg: RuntimeConfig, returnTo = '/', reason = '1'): HttpResponse {
   const path = safeReturnPath(returnTo);
   const sep = path.includes('?') ? '&' : '?';
-  return redirect(`${cfg.allowedOrigin}${path}${sep}login_error=1`, [clearTxCookie()]);
+  return redirect(`${cfg.allowedOrigin}${path}${sep}login_error=${encodeURIComponent(reason)}`, [
+    clearTxCookie(),
+  ]);
 }
 
 /** GET /api/auth/line/start */
@@ -96,7 +101,11 @@ export function handleLineStart(event: APIGatewayProxyEventV2, cfg: RuntimeConfi
   const nonce = generateNonce();
   const pkce = generatePkce();
 
-  const tx: OauthTx = { state, nonce, codeVerifier: pkce.verifier, returnTo };
+  const invite =
+    typeof q.invite === 'string' && q.invite.length > 0 && q.invite.length <= 200
+      ? q.invite
+      : undefined;
+  const tx: OauthTx = { state, nonce, codeVerifier: pkce.verifier, returnTo, inviteToken: invite };
   const txToken = signTx(tx, cfg.secrets.cookieSecret);
 
   const authUrl = new URL(LINE_AUTHORIZE_URL);
@@ -173,7 +182,18 @@ export async function handleLineCallback(
   // ユーザーupsert → セッションCookie発行
   const now = new Date().toISOString();
   const displayName = verified.token.name ?? 'LINEユーザー';
-  const userId = await upsertUserFromLine(cfg.app, verified.token.sub, displayName, now);
+  const login = await loginOrRegisterFromLine(
+    cfg.app,
+    verified.token.sub,
+    displayName,
+    now,
+    tx.inviteToken,
+  );
+  if (!login.ok) {
+    console.warn('[auth/callback] registration rejected', { reason: login.reason });
+    return loginErrorRedirect(cfg, tx.returnTo, login.reason);
+  }
+  const userId = login.userId;
   const sessionVersion = await getSessionVersion(cfg.app, userId);
   const sessionToken = signSession({ userId, sessionVersion }, cfg.secrets.cookieSecret);
 

@@ -1,6 +1,6 @@
 // 認証ユースケース（app層）。requirements 要件1 に準拠。
 //  - exchangeLineCode: 認可コードをIDトークンに交換（LINEのtokenエンドポイント）
-//  - upsertUserFromLine: 初回は作成(If-None-Match)、2回目以降は表示名更新
+//  - loginOrRegisterFromLine: 既存は表示名更新、新規は有効な招待を claim して作成（要件1-13）
 //  - bumpSessionVersion: ログアウトで版数を上げ全Cookieを無効化
 
 import { randomId, type User } from '@photo-album/shared';
@@ -12,6 +12,7 @@ import {
   AlreadyExistsError,
 } from '../repo/index.js';
 import type { AppContext } from './context.js';
+import { claimInvite, type InviteRejectReason } from './invites.js';
 
 const LINE_TOKEN_URL = 'https://api.line.me/oauth2/v2.1/token';
 
@@ -52,49 +53,64 @@ export async function exchangeLineCode(params: {
   return { idToken: json.id_token };
 }
 
+/** ログイン/登録の結果。拒否時は理由（画面の login_error）を返す。 */
+export type LoginResult =
+  | { ok: true; userId: string }
+  | { ok: false; reason: 'invite_required' | InviteRejectReason };
+
 /**
- * LINEの sub から内部ユーザーを解決する。
- * 初回: userId を新規発行し、identities と users を作成（二重作成は If-None-Match で防止）。
- * 2回目以降: 表示名を更新。
- * @returns 内部 userId
+ * LINEの sub から内部ユーザーを解決する。要件1-13。
+ * - 既存identity: 招待なしでログイン可。表示名を更新。
+ * - 新規: 有効な招待が必須。招待を claim してから identity → user を作成する。
+ *   招待が使えない場合は user/identity を一切作らない。
  */
-export async function upsertUserFromLine(
+export async function loginOrRegisterFromLine(
   ctx: AppContext,
   lineSub: string,
   displayName: string,
   now: string,
-): Promise<string> {
+  inviteToken?: string | null,
+): Promise<LoginResult> {
   const identityKey = metaKeys.lineIdentity(lineSub);
   const existing = await getJson<LineIdentity>(ctx.metaBucket, identityKey);
 
   if (existing) {
-    // 既存ユーザー: 表示名を更新
     const userId = existing.value.userId;
     await updateDisplayName(ctx, userId, displayName, now);
-    return userId;
+    return { ok: true, userId };
   }
 
-  // 初回: userId を発行し、identity → user の順で作成
+  // 新規登録: 招待が必須
+  if (!inviteToken) return { ok: false, reason: 'invite_required' };
+
   const userId = randomId();
+  const claim = await claimInvite(ctx, inviteToken, userId, Date.parse(now), {
+    allowOrphanReclaim: true,
+  });
+  if (!claim.ok) return { ok: false, reason: claim.reason };
+
   try {
     await putJsonIfAbsent<LineIdentity>(ctx.metaBucket, identityKey, { userId, createdAt: now });
   } catch (err) {
     if (err instanceof AlreadyExistsError) {
-      // 競合（同時初回ログイン）: 既存を読み直す
+      // 同時初回ログインの競合: 先に作られた identity を採用する
       const again = await getJson<LineIdentity>(ctx.metaBucket, identityKey);
       if (again) {
         await updateDisplayName(ctx, again.value.userId, displayName, now);
-        return again.value.userId;
+        return { ok: true, userId: again.value.userId };
       }
     }
     throw err;
   }
 
   const user: User = { userId, displayName, sessionVersion: 0, createdAt: now };
-  await putJsonIfAbsent<User>(ctx.metaBucket, metaKeys.user(userId), user);
-  return userId;
+  try {
+    await putJsonIfAbsent<User>(ctx.metaBucket, metaKeys.user(userId), user);
+  } catch (err) {
+    if (!(err instanceof AlreadyExistsError)) throw err;
+  }
+  return { ok: true, userId };
 }
-
 /** 表示名を更新する（ETag条件付き・競合は軽リトライ）。 */
 async function updateDisplayName(
   ctx: AppContext,

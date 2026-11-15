@@ -169,3 +169,38 @@ describe('acceptInvite', () => {
     );
   });
 });
+
+describe('招待の1回限り化（要件2-12, 2-13）', () => {
+  it('別のユーザーが使用済みの招待を使うと410 invite_used、メンバーにならない', async () => {
+    const g = await createGroup(ctx, 'admin', 'fam', '2026-01-01T00:00:00Z');
+    const invite = await issueInvite(ctx, g.groupId, 'admin', Date.now());
+    await acceptInvite(ctx, invite.token, 'u2', Date.now());
+
+    await expect(acceptInvite(ctx, invite.token, 'u3', Date.now())).rejects.toSatisfy(
+      (e: unknown) => e instanceof AppError && e.status === 410 && e.code === 'invite_used',
+    );
+    const group = mem.get(metaKeys.group(g.groupId)) as Group;
+    expect(group.memberUserIds).not.toContain('u3');
+  });
+
+  it('使用済みの招待は一覧から除外される', async () => {
+    const g = await createGroup(ctx, 'admin', 'fam', '2026-01-01T00:00:00Z');
+    const used = await issueInvite(ctx, g.groupId, 'admin', Date.now());
+    const unused = await issueInvite(ctx, g.groupId, 'admin', Date.now());
+    await acceptInvite(ctx, used.token, 'u2', Date.now());
+
+    const listed = await listInvites(ctx, g.groupId, 'admin', Date.now());
+    expect(listed.map((i) => i.inviteId)).toEqual([unused.inviteId]);
+  });
+
+  it('本人の再実行は冪等で成功し、使用者は変わらない', async () => {
+    const g = await createGroup(ctx, 'admin', 'fam', '2026-01-01T00:00:00Z');
+    const invite = await issueInvite(ctx, g.groupId, 'admin', Date.now());
+    await acceptInvite(ctx, invite.token, 'u2', Date.now());
+    await expect(acceptInvite(ctx, invite.token, 'u2', Date.now())).resolves.toEqual({
+      groupId: g.groupId,
+    });
+    const inv = mem.get(metaKeys.inviteByHash(invite.inviteId)) as { usedBy: string };
+    expect(inv.usedBy).toBe('u2');
+  });
+});

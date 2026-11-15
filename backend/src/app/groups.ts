@@ -30,6 +30,7 @@ import {
 import { canManageInvite, isGroupAdmin, isGroupMember } from '../domain/authz.js';
 import { validateText } from '../domain/validation.js';
 import type { AppContext } from './context.js';
+import { claimInvite, isPlausibleToken, type InviteRejectReason } from './invites.js';
 import { AppError, forbidden, notFoundOrForbidden } from './errors.js';
 import { getGroup } from './entities.js';
 
@@ -179,8 +180,14 @@ export async function listInvites(
     const rec = await getJson<Invite>(ctx.metaBucket, metaKeys.inviteByHash(inviteId));
     if (!rec) continue;
     const inv = rec.value;
-    // 正本で照合（インデックスを信用しない）。失効済み・期限切れは除外
-    if (inv.groupId !== groupId || inv.revokedAt || Date.parse(inv.expiresAt) <= nowMs) continue;
+    // 正本で照合（インデックスを信用しない）。失効済み・使用済み・期限切れは除外
+    if (
+      inv.groupId !== groupId ||
+      inv.revokedAt ||
+      inv.usedBy ||
+      Date.parse(inv.expiresAt) <= nowMs
+    )
+      continue;
     out.push({ inviteId, expiresAt: inv.expiresAt, createdAt: inv.createdAt });
   }
   return out.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
@@ -231,22 +238,15 @@ export async function acceptInvite(
   userId: string,
   nowMs: number,
 ): Promise<{ groupId: string }> {
-  if (typeof token !== 'string' || token.length === 0 || token.length > 200) {
+  if (!isPlausibleToken(token)) {
     throw new AppError(404, 'invite_invalid', '招待が無効です。');
   }
-  const tokenHash = sha256Hex(token);
-  const inviteRec = await getJson<Invite>(ctx.metaBucket, metaKeys.inviteByHash(tokenHash));
-  if (!inviteRec) {
-    throw new AppError(404, 'invite_invalid', '招待が無効です。');
+  // 1回限り: claim 済みの本人なら冪等に成功、他人なら invite_used
+  const claim = await claimInvite(ctx, token, userId, nowMs);
+  if (!claim.ok) {
+    throw inviteRejection(claim.reason);
   }
-  const invite = inviteRec.value;
-  if (invite.revokedAt) {
-    throw new AppError(410, 'invite_revoked', 'この招待は失効しています。');
-  }
-  if (Date.parse(invite.expiresAt) <= nowMs) {
-    throw new AppError(410, 'invite_expired', 'この招待は期限切れです。');
-  }
-
+  const invite = claim.invite;
   const groupId = invite.groupId;
   await addMemberWithRetry(ctx, groupId, userId);
   // 検索用インデックスの修復（冪等・無条件put）
@@ -255,11 +255,7 @@ export async function acceptInvite(
 }
 
 /** メンバー追加をETag条件付きで行う。既にメンバーなら何もしない（冪等）。 */
-async function addMemberWithRetry(
-  ctx: AppContext,
-  groupId: string,
-  userId: string,
-): Promise<void> {
+async function addMemberWithRetry(ctx: AppContext, groupId: string, userId: string): Promise<void> {
   for (let attempt = 0; attempt < MAX_RETRY; attempt++) {
     const rec = await getJsonOrThrow<Group>(ctx.metaBucket, metaKeys.group(groupId));
     if (rec.value.memberUserIds.includes(userId)) {
@@ -279,5 +275,19 @@ async function addMemberWithRetry(
       }
       throw err;
     }
+  }
+}
+
+/** 招待拒否理由を AppError に変換する。 */
+function inviteRejection(reason: InviteRejectReason): AppError {
+  switch (reason) {
+    case 'invite_invalid':
+      return new AppError(404, 'invite_invalid', '招待が無効です。');
+    case 'invite_revoked':
+      return new AppError(410, 'invite_revoked', 'この招待は失効しています。');
+    case 'invite_expired':
+      return new AppError(410, 'invite_expired', 'この招待は期限切れです。');
+    case 'invite_used':
+      return new AppError(410, 'invite_used', 'この招待はすでに使用されています。');
   }
 }

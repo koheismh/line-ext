@@ -244,12 +244,12 @@
 
 - [ ] 22. 招待制の新規登録＋招待の1回限り化（設計: design.md 6-7 / 要件 1-13, 2-12, 2-13）
   - [x] 22.1 `shared/src/domain.ts` の Invite に `usedBy?` / `usedAt?` を追加
-  - [ ] 22.2 `backend/src/app/invites.ts` 新規（evaluate / claim。ETag条件付き書き込み）
-  - [ ] 22.3 `app/auth.ts` の `upsertUserFromLine` を `loginOrRegisterFromLine` 化（戻り値は判別共用体: ok / 拒否reason）。孤児claim猶予5分
-  - [ ] 22.4 `handlers/authFlow.ts`: start の `invite` を `OauthTx.inviteToken` に保持、callback で reason別に `?login_error=<reason>` へ302
-  - [ ] 22.5 `app/groups.ts`: acceptInvite を claim 化（自分なら冪等、他人は 410 invite_used）、listInvites で使用済み除外
-  - [ ] 22.6 frontend: LoginGate の invite 引継ぎ、reason別メッセージ、InvitePage の invite_used 表示、GroupPage の一覧反映
-  - [ ] 22.7 テスト: 新規 `app/auth.test.ts`（既存ユーザー招待なしOK / 新規招待なし拒否・未作成 / 有効招待で作成 / 2人目 invite_used / revoked・expired・invalid / 孤児claim猶予）、`groups.test.ts` に1回限り・冪等・一覧除外
+  - [x] 22.2 `backend/src/app/invites.ts` 新規（evaluate / claim。ETag条件付き書き込み）
+  - [x] 22.3 `app/auth.ts` の `upsertUserFromLine` を `loginOrRegisterFromLine` 化（戻り値は判別共用体: ok / 拒否reason）。孤児claim猶予5分
+  - [x] 22.4 `handlers/authFlow.ts`: start の `invite` を `OauthTx.inviteToken` に保持、callback で reason別に `?login_error=<reason>` へ302
+  - [x] 22.5 `app/groups.ts`: acceptInvite を claim 化（自分なら冪等、他人は 410 invite_used）、listInvites で使用済み除外
+  - [x] 22.6 frontend: LoginGate の invite 引継ぎ、reason別メッセージ、InvitePage の invite_used 表示、GroupPage の一覧反映
+  - [x] 22.7 テスト: 新規 `app/auth.test.ts`（既存ユーザー招待なしOK / 新規招待なし拒否・未作成 / 有効招待で作成 / 2人目 invite_used / revoked・expired・invalid / 孤児claim猶予）、`groups.test.ts` に1回限り・冪等・一覧除外
   - [ ] 22.8 README・仕様更新 → `npm run typecheck/test/lint`・`cdk synth` → deploy → 実機確認（既存オーナーのログイン継続、別LINEアカウントは「テスター」登録して招待なし拒否を確認）
 
 ## 引き継ぎメモ（別AI向け）
