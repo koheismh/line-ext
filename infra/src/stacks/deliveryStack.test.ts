@@ -30,6 +30,7 @@ const { authApi, delivery } = (() => {
     config,
     metaBucket: storage.metaBucket,
     mediaBucket: storage.mediaBucket,
+    ffmpegLayer: 'ffmpeg:1',
   });
   const authApiStack = new AuthApiStack(app, 'AuthApi', {
     config,

@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { App } from 'aws-cdk-lib';
+import { App, Stack } from 'aws-cdk-lib';
 import { Template, Match } from 'aws-cdk-lib/assertions';
 import { RetentionDays } from 'aws-cdk-lib/aws-logs';
 import { StorageStack } from './storageStack.js';
-import { ProcessingStack } from './processingStack.js';
+import { ProcessingStack, ffmpegLayerArn } from './processingStack.js';
 import type { EnvConfig } from '../config.js';
 
 const config: EnvConfig = {
@@ -28,6 +28,7 @@ const template = (() => {
     config,
     metaBucket: storage.metaBucket,
     mediaBucket: storage.mediaBucket,
+    ffmpegLayer: 'ffmpeg:1',
   });
   return Template.fromStack(processing);
 })();
@@ -50,6 +51,15 @@ function s3Grants(): { action: string; resource: string }[] {
 }
 
 describe('ProcessingStack', () => {
+  it('サムネイル生成 Lambda にだけ FFmpeg Layer を付ける（アカウントIDはテンプレート上で解決）', () => {
+    const fns = Object.entries(template.findResources('AWS::Lambda::Function'));
+    const withLayers = fns.filter(([, r]) => (r as { Properties: { Layers?: unknown } }).Properties.Layers);
+    expect(withLayers.map(([id]) => id)).toEqual([expect.stringMatching(/^ThumbnailFn/)]);
+    const layers = JSON.stringify((withLayers[0]![1] as { Properties: { Layers: unknown } }).Properties.Layers);
+    expect(layers).toContain(':layer:ffmpeg:1');
+    expect(layers).toContain('AWS::AccountId');
+  });
+
   it('Lambda を3つ作成（サムネイル・削除ワーカー・掃除）し、現行LTSのランタイムを使う', () => {
     template.resourceCountIs('AWS::Lambda::Function', 3);
     template.allResourcesProperties('AWS::Lambda::Function', { Runtime: 'nodejs24.x' });
@@ -95,5 +105,22 @@ describe('ProcessingStack', () => {
     expect(
       grants.some((g) => g.action.startsWith('s3:DeleteObject') && g.resource.includes('trash/')),
     ).toBe(false);
+  });
+});
+
+describe('ffmpegLayerArn', () => {
+  const stack = new Stack(new App(), 'Arn', { env: { region: 'ap-northeast-1' } });
+
+  it('名前:バージョン は同じアカウント・リージョンの Layer ARN にする（アカウントIDはデプロイ時に解決）', () => {
+    const arn = ffmpegLayerArn(stack, 'ffmpeg:3');
+    expect(JSON.stringify(stack.resolve(arn))).toMatch(
+      /:lambda:ap-northeast-1:.*AWS::AccountId.*:layer:ffmpeg:3/,
+    );
+  });
+
+  it('完全な ARN はそのまま使い、none なら Layer を付けない', () => {
+    const full = 'arn:aws:lambda:ap-northeast-1:123456789012:layer:ffmpeg:2';
+    expect(ffmpegLayerArn(stack, full)).toBe(full);
+    expect(ffmpegLayerArn(stack, 'none')).toBeUndefined();
   });
 });

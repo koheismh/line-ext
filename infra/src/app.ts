@@ -1,7 +1,7 @@
 // CDKアプリのエントリ。環境ごとに Storage / Processing / AuthApi / Delivery の4スタックを構成する。
 
 import { App } from 'aws-cdk-lib';
-import { loadEnvConfig } from './config.js';
+import { loadEnvConfig, resolveDeploySettings } from './config.js';
 import { StorageStack } from './stacks/storageStack.js';
 import { ProcessingStack } from './stacks/processingStack.js';
 import { AuthApiStack } from './stacks/authApiStack.js';
@@ -12,9 +12,10 @@ const config = loadEnvConfig();
 
 const env = { region: config.region };
 
-// アプリの公開オリジン（CloudFrontドメイン）。初回デプロイ後に APP_ORIGIN で指定して再デプロイする。
-// 例: APP_ORIGIN=https://d3gshsyo8qdxa8.cloudfront.net
-const appOrigin = process.env.APP_ORIGIN ?? '';
+// デプロイ時の設定（公開オリジン・FFmpeg Layer）。本番の値は infra/cdk.json の context で Git 管理する。
+// 環境変数 APP_ORIGIN / FFMPEG_LAYER_ARN があればそちらを優先する（一時的な上書き用）。
+const deploy = resolveDeploySettings(process.env, (key) => app.node.tryGetContext(key));
+const appOrigin = deploy.appOrigin;
 const allowedOrigins = appOrigin ? [appOrigin] : ['https://localhost'];
 
 const storage = new StorageStack(app, `PhotoAlbum-Storage-${config.envName}`, {
@@ -28,6 +29,7 @@ const processing = new ProcessingStack(app, `PhotoAlbum-Processing-${config.envN
   config,
   metaBucket: storage.metaBucket,
   mediaBucket: storage.mediaBucket,
+  ffmpegLayer: deploy.ffmpegLayer,
 });
 
 // 参照は Storage → Processing → AuthApi → Delivery の一方向（AuthApi は削除キューを受け取るだけ）

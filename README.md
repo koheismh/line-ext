@@ -66,7 +66,7 @@ requirements の受け入れテスト例 → 担保する主な実装/テスト�
 
 ## デプロイ（実施には明示的な承認と手作業が必要）
 
-> 本リポジトリはローカル検証まで完了。実AWSデプロイは未実施。
+> 本番環境（`https://d3gshsyo8qdxa8.cloudfront.net`）にデプロイ済み。デプロイは明示的な承認を得てから行う。
 
 1. AWS 認証: `aws configure sso` → `aws sso login`（東京リージョン `ap-northeast-1`）
 2. LINE Developers: チャネル作成、コールバックURL `https://<CloudFrontドメイン>/api/auth/line/callback` を登録
@@ -74,18 +74,21 @@ requirements の受け入れテスト例 → 担保する主な実装/テスト�
    - `/<env>/photo-album/cookie-secret`
    - `/<env>/photo-album/line-channel-id`
    - `/<env>/photo-album/line-channel-secret`
-4. `cdk deploy --all`（Lambda は NodejsFunction が esbuild で自動バンドル）→ 出力の CloudFront ドメインを `APP_ORIGIN` に指定して再デプロイ（LINE コールバック・CORS・`ALLOWED_ORIGIN` に反映）
+4. `cd infra; npx cdk diff --all` で意図しない差分（Layer の削除など）が無いか確認してから `npx cdk deploy --all`（Lambda は NodejsFunction が esbuild で自動バンドル）
 
-デプロイ時の環境変数（任意）:
+デプロイ時の設定:
 
-| 変数 | 用途 | 既定 |
+| 設定 | 置き場所（上が優先） | 本番の値 |
 |---|---|---|
-| `APP_ORIGIN` | 公開オリジン（CloudFront ドメイン） | なし |
-| `FFMPEG_LAYER_ARN` | 写真・動画プレビュー用の FFmpeg Layer | なし（プレビューは失敗扱い） |
-| `API_THROTTLE_RATE` / `API_THROTTLE_BURST` | API Gateway のスロットリング | 20 / 40 |
-| `MONTHLY_BUDGET_USD` / `BUDGET_NOTIFY_EMAIL` | 予算アラート | 20 / なし |
+| 公開オリジン（CloudFront ドメイン。CORS・LINE コールバック・変更系 API の Origin 検証に使う） | 環境変数 `APP_ORIGIN` → `infra/cdk.json` の `photoAlbum:appOrigin` | `https://d3gshsyo8qdxa8.cloudfront.net` |
+| FFmpeg Layer（写真・動画のプレビュー） | 環境変数 `FFMPEG_LAYER_ARN` → `infra/cdk.json` の `photoAlbum:ffmpegLayer`（`名前:バージョン`・Layer の ARN・`none`） | `ffmpeg:1` |
+| API Gateway のスロットリング | 環境変数 `API_THROTTLE_RATE` / `API_THROTTLE_BURST` | 20 / 40 |
+| 予算アラート | 環境変数 `MONTHLY_BUDGET_USD` / `BUDGET_NOTIFY_EMAIL` | 20 / なし |
 
-既にデプロイ済みの環境へ反映する場合の注意: Lambda のランタイムが `nodejs24.x` に変わり、ログ出力先が保存期間30日の新しいロググループになる（旧 `/aws/lambda/...` は残る）。スタック依存は `Storage → Processing → AuthApi → Delivery`。
+- 公開オリジンと FFmpeg Layer の本番の値は `infra/cdk.json` で Git 管理しているので、環境変数を設定しなくても本番と同じ構成でデプロイされる。環境変数は一時的な上書き用。本番の値を変えるときは `infra/cdk.json` を書き換えてコミットする。
+- FFmpeg Layer の指定が無いと synth・diff・deploy はエラーで止まる。以前は環境変数の設定漏れのままデプロイされて Layer が外れ、写真・動画のプレビューが作れなくなった（2026-11-16、tasks.md タスク24）。
+- 新しい環境を作るときは、`photoAlbum:appOrigin` を空、`photoAlbum:ffmpegLayer` を `none` にして最初のデプロイを行い、CloudFront のドメインと FFmpeg Layer ができたら値を入れて再デプロイする。
+- 1つのスタックだけを更新するときは `--exclusively` を付ける（付けないと依存する下位のスタックも更新される）。スタック依存は `Storage → Processing → AuthApi → Delivery`。
 
 ## プレビュー（FFmpeg）の有効化
 
@@ -95,12 +98,15 @@ requirements の受け入れテスト例 → 担保する主な実装/テスト�
 
 - FFmpeg: `/opt/bin/ffmpeg` と `/opt/bin/ffprobe` を含む Layer（パスが異なる場合は Lambda の環境変数 `FFMPEG_PATH` / `FFPROBE_PATH`）。HTTPS 入力に対応したビルドが必要
 
+Layer を作り直した（バージョンが上がった）ときは、`infra/cdk.json` の `photoAlbum:ffmpegLayer` を `ffmpeg:<新しいバージョン>` に書き換えてコミットし、処理系スタックだけをデプロイする。
+
 ```
-$env:FFMPEG_LAYER_ARN = "arn:aws:lambda:ap-northeast-1:<acct>:layer:ffmpeg:<ver>"
-cdk deploy PhotoAlbum-Processing-dev
+cd infra
+npx cdk diff PhotoAlbum-Processing-dev --exclusively     # Layer の変更だけか確認
+npx cdk deploy PhotoAlbum-Processing-dev --exclusively
 ```
 
-Layer 配備前にアップロードしたメディアは、投稿者がビューアの「再処理」で作り直せる。
+Layer が無い間にアップロードしたメディアは、投稿者がビューアの「再処理」で作り直せる。
 
 ## 未検証（実機確認が必要）
 

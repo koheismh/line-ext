@@ -64,7 +64,8 @@ LINEログインした利用者が、個人またはグループのアルバム�
 - **循環参照の回避策**:
   - S3→Lambda のイベントは直結せず **EventBridge 経由**（CDKの既知の循環参照回避）。対象は `originals/` プレフィックスのみ（`previews/`・`trash/` では起動しない）。
   - 静的フロントS3は **DeliveryStack 側に置く**（CloudFront のバケットポリシーとの循環を避ける）。
-  - CloudFront ドメインに依存する値（メディアS3のCORS許可オリジン、Origin検証、LINEコールバックURL、招待URL生成）は、**SSMパラメータに書き出して実行時に読む**か、独自ドメインを先に固定する。
+  - CloudFront ドメインに依存する値（メディアS3のCORS許可オリジン、Origin検証、LINEコールバックURL）は、デプロイ時の設定「公開オリジン」から作る。初回は空でデプロイし、CloudFront のドメインが決まったら設定して再デプロイする（招待URLは画面側で `window.location.origin` から作る）。
+- **デプロイ時の設定は Git で管理する**: 公開オリジンと FFmpeg Layer は `infra/cdk.json` の context（`photoAlbum:appOrigin` / `photoAlbum:ffmpegLayer`）に本番の値を置く。環境変数 `APP_ORIGIN` / `FFMPEG_LAYER_ARN` は一時的な上書き用。FFmpeg Layer の指定が無いと synth をエラーにする（Layer なしは `none` で明示）。Layer の ARN はアカウントIDをリポジトリに書かず、テンプレート上で `AWS::AccountId` から組み立てる。以前は環境変数で毎回渡しており、設定漏れのデプロイで Layer が外れる障害が起きた（2026-11-16、tasks.md タスク24）。
 - 削除保護: メディア・メタデータバケットは `RemovalPolicy.RETAIN`（誤削除防止）。
 
 ---
@@ -81,7 +82,7 @@ LINEログインした利用者が、個人またはグループのアルバム�
 | バックエンド | Node.js LTS Lambda + TypeScript | `nodejs24.x`（`nodejs20.x` は 2026-04-30 に Lambda で非推奨）。ログ保存期間は30日（暫定） |
 | IaC | AWS CDK (TypeScript) | 全リソースをコード管理 |
 | 認証 | LINE Login v2.1 OIDC | 認可コードフロー + state/nonce/PKCE |
-| 画像・動画処理 | FFmpeg / ffprobe (Lambda Layer) | 写真の縮小JPEG化・動画の冒頭フレーム抽出・コーデック判定。`FFMPEG_LAYER_ARN`、既定パス `/opt/bin/ffmpeg`・`/opt/bin/ffprobe`（当初の Sharp は不要になり依存も削除） |
+| 画像・動画処理 | FFmpeg / ffprobe (Lambda Layer) | 写真の縮小JPEG化（EXIF の向きを反映し、出力に EXIF を含めない）・動画の冒頭フレーム抽出・コーデック判定。Layer は `infra/cdk.json` の context `photoAlbum:ffmpegLayer`（例 `ffmpeg:1`）で指定、既定パス `/opt/bin/ffmpeg`・`/opt/bin/ffprobe`（当初の Sharp は不要になり依存も削除） |
 | 秘密情報 | SSM Parameter Store SecureString | |
 
 ---

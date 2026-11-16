@@ -264,11 +264,21 @@
   - [ ] 23.8 iPhone 実機での確認（見た目・写真/動画のモーダル・回線ガードの確認モーダル）。タスク22.8の実機確認と同時に行う
   - _注: Android・Windows には丸ゴシックがないため標準のゴシック体で表示される。揃えたい場合は Web フォントの自己ホストを検討（初回の通信量が数百KB増える）_
 
+- [x] 24. 障害対応: 写真のプレビューが毎回作れない（2026-11-16）
+  - 症状: スマホで撮影した写真をアップロードすると、毎回「プレビューを作れませんでした」（`error(preview_failed)`）になる
+  - 原因: 2026-11-15 22:48（日本時間）の処理系スタック更新（タスク22のデプロイ）で環境変数 `FFMPEG_LAYER_ARN` を設定していなかったため、サムネイル生成 Lambda から FFmpeg Layer が外れた。ログはいずれも「FFmpeg が未配備です」。写真の形式や端末の問題ではなく、動画のプレビューも同じく作れない状態だった
+  - [x] 24.1 復旧: 処理系スタックだけを Layer（`ffmpeg:1`）付きで再デプロイ（`--exclusively`。差分は Layer の追加のみ）
+  - [x] 24.2 確認: スマホ写真相当の JPEG（4032x3024、EXIF Orientation=6）を、どのアルバムにも属さないテスト用ID（`zzverify-*`）で本番と同じ経路（S3 → EventBridge → Lambda）に流し、約7秒で ready・プレビュー 384x512（EXIF の向きを反映）・プレビューに EXIF が残らないことを確認。テスト用のオブジェクトは削除済み
+  - [x] 24.3 再発防止: 公開オリジンと FFmpeg Layer を `infra/cdk.json` の context（`photoAlbum:appOrigin` / `photoAlbum:ffmpegLayer`）で Git 管理（環境変数は一時的な上書き用）。FFmpeg Layer の指定が無いと synth をエラーにする（Layer なしは `none` で明示）。ARN はアカウントIDをリポジトリに書かず `AWS::AccountId` から組み立てる。環境変数なしの `cdk diff --all` が4スタックとも差分なし（＝本番と一致）を確認
+  - [x] 24.4 テスト: `infra/src/config.test.ts`（設定の優先順位、指定漏れ・不正な値はエラー、cdk.json に本番の値があること）、ProcessingStack（サムネイル生成 Lambda にだけ Layer が付く、ARN の組み立て）
+  - 失敗した写真3枚は利用者が削除済み（ごみ箱。30日で自動削除）。必要ならアップロードし直す
+
 ## 引き継ぎメモ（別AI向け）
 
 - 作業ディレクトリ: リポジトリルート。npm workspaces: shared / backend / frontend / infra。検証: `npm run typecheck`, `npm test`, `npm run lint`, `cd infra; npx cdk synth --all`。
-- デプロイ時は必ず環境変数を設定: `$env:APP_ORIGIN="https://d3gshsyo8qdxa8.cloudfront.net"`。Processing 更新時は `$env:FFMPEG_LAYER_ARN` も設定（`aws lambda list-layer-versions --layer-name ffmpeg` で最新ARNを取得）。未設定だとCORS/コールバックが初期化、またはLayerが外れる。
-- 例: `cd infra; npx cdk deploy PhotoAlbum-AuthApi-dev --require-approval never`。認証は `aws sso login` の一時認証情報。
+- デプロイ時の設定（公開オリジン・FFmpeg Layer）は `infra/cdk.json` の context（`photoAlbum:appOrigin` / `photoAlbum:ffmpegLayer`）で管理している。環境変数なしで `cdk deploy` しても本番と同じ構成になる（環境変数 `APP_ORIGIN` / `FFMPEG_LAYER_ARN` は一時的な上書き用）。FFmpeg Layer を作り直したら `photoAlbum:ffmpegLayer` のバージョン（`aws lambda list-layer-versions --layer-name ffmpeg` で確認）を書き換えてコミットする。
+- デプロイ前に必ず `cd infra; npx cdk diff --all` で意図しない差分（Layer の削除など）が無いか確認する。以前、環境変数の設定漏れで FFmpeg Layer が外れ、写真のプレビューが作れなくなった（タスク24）。
+- 例: `cd infra; npx cdk deploy PhotoAlbum-AuthApi-dev --exclusively --require-approval never`（`--exclusively` を付けないと依存する Storage・Processing も更新される）。認証は `aws sso login` の一時認証情報。
 - フロント反映: `cd frontend; npm run build` → `aws s3 sync frontend/dist s3://<frontバケット> --delete` → `aws cloudfront create-invalidation --distribution-id <ID> --paths "/*"`（バケット名・IDは `aws cloudformation describe-stacks` で取得）。
 - LINEチャネルは「LINEログイン」種別。コールバックURLは `<APP_ORIGIN>/api/auth/line/callback`。秘密はSSM SecureString `/dev/photo-album/{cookie-secret,line-channel-id,line-channel-secret}`。
 - デザインの変更は `frontend/src/styles/tokens.css`（色・書体・角丸・影）から行う。部品は `frontend/src/components/ui/`。画面に色を直接書かない（README「デザインの変更方法」）。

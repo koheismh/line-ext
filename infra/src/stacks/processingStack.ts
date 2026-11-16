@@ -5,9 +5,9 @@
 //  - 定期掃除は EventBridge スケジュール
 //  - IAM は対象バケット/プレフィックスに限定（最小権限）
 //  - Lambda コードは NodejsFunction（esbuild）でバンドル。写真・動画のプレビューに使う FFmpeg は
-//    ネイティブバイナリのため Lambda Layer で供給する（FFMPEG_LAYER_ARN）。
+//    ネイティブバイナリのため Lambda Layer で供給する（infra/cdk.json の context "photoAlbum:ffmpegLayer"）。
 
-import { Duration, Stack, type StackProps } from 'aws-cdk-lib';
+import { Annotations, ArnFormat, Duration, Stack, type StackProps } from 'aws-cdk-lib';
 import type { IBucket } from 'aws-cdk-lib/aws-s3';
 import { LayerVersion, type ILayerVersion } from 'aws-cdk-lib/aws-lambda';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
@@ -19,7 +19,7 @@ import { PolicyStatement } from 'aws-cdk-lib/aws-iam';
 import type { Construct } from 'constructs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import type { EnvConfig } from '../config.js';
+import { NO_FFMPEG_LAYER, type EnvConfig } from '../config.js';
 import { LAMBDA_RUNTIME, lambdaLogGroup } from '../lambdaDefaults.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -30,6 +30,27 @@ export interface ProcessingStackProps extends StackProps {
   config: EnvConfig;
   metaBucket: IBucket;
   mediaBucket: IBucket;
+  /**
+   * サムネイル生成 Lambda に付ける FFmpeg Layer（/opt/bin/ffmpeg・/opt/bin/ffprobe を含む）。
+   * `名前:バージョン`（このスタックと同じアカウント・リージョンの Layer）、完全な ARN、または 'none'。
+   * 必須にして、指定漏れのまま Layer が外れたデプロイを防ぐ（値は infra/cdk.json の context）。
+   */
+  ffmpegLayer: string;
+}
+
+/**
+ * FFmpeg Layer の指定から ARN を作る。'none' なら undefined。
+ * `名前:バージョン` はアカウントIDをリポジトリに書かないよう、テンプレート上で AWS::AccountId から組み立てる。
+ */
+export function ffmpegLayerArn(stack: Stack, setting: string): string | undefined {
+  if (setting === NO_FFMPEG_LAYER) return undefined;
+  if (setting.startsWith('arn:')) return setting;
+  return stack.formatArn({
+    service: 'lambda',
+    resource: 'layer',
+    resourceName: setting,
+    arnFormat: ArnFormat.COLON_RESOURCE_NAME,
+  });
 }
 
 export class ProcessingStack extends Stack {
@@ -45,13 +66,17 @@ export class ProcessingStack extends Stack {
       MEDIA_BUCKET: mediaBucket.bucketName,
     };
 
-    // 写真・動画処理の Lambda Layer。ARN が環境変数にあればアタッチする。
-    //  - FFMPEG_LAYER_ARN: /opt/bin/ffmpeg・/opt/bin/ffprobe を含む Layer（プレビュー生成・コーデック判定）
-    // 未供給の間は該当メディアが error(preview_failed) になり、配備後に投稿者が再処理できる。
+    // 写真・動画処理の Lambda Layer（プレビュー生成・コーデック判定）。
+    // 'none' の間は該当メディアが error(preview_failed) になり、Layer を付けた後に投稿者が再処理できる。
     const processingLayers: ILayerVersion[] = [];
-    const ffmpegLayerArn = process.env.FFMPEG_LAYER_ARN;
-    if (ffmpegLayerArn) {
-      processingLayers.push(LayerVersion.fromLayerVersionArn(this, 'FfmpegLayer', ffmpegLayerArn));
+    const layerArn = ffmpegLayerArn(this, props.ffmpegLayer);
+    if (layerArn) {
+      processingLayers.push(LayerVersion.fromLayerVersionArn(this, 'FfmpegLayer', layerArn));
+    } else {
+      Annotations.of(this).addWarningV2(
+        'photo-album:no-ffmpeg-layer',
+        'FFmpeg Layer なしでデプロイします。写真・動画のプレビューは作成されず error(preview_failed) になります。',
+      );
     }
 
     // ---- サムネイル生成Lambda（FFmpeg）----
