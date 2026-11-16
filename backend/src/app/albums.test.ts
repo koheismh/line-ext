@@ -109,6 +109,87 @@ describe('getAlbum', () => {
       (e: unknown) => e instanceof AppError && e.status === 404,
     );
   });
+
+  it('所属を同梱する: グループのアルバムはグループ名、個人アルバムは null', async () => {
+    seedGroup('g1', ['u1', 'u2'], ['u1']);
+    mem.put(metaKeys.group('g1'), { ...(mem.get(metaKeys.group('g1')) as Group), name: '家族' });
+    const grp = await createAlbum(ctx, 'u1', { ownerType: 'group', ownerId: 'g1', title: 'g' }, 'now');
+    const personal = await createAlbum(ctx, 'u1', { ownerType: 'user', ownerId: 'u1', title: 'p' }, 'now');
+
+    const g = await getAlbum(ctx, grp.albumId, 'u2'); // 作成者以外のメンバーも所属が分かる
+    expect(g.ownerType).toBe('group');
+    expect(g.ownerId).toBe('g1');
+    expect(g.ownerName).toBe('家族');
+    expect((await getAlbum(ctx, personal.albumId, 'u1')).ownerName).toBeNull();
+  });
+
+  it('グループから外れた利用者には所属も含めて返さない（404）', async () => {
+    seedGroup('g1', ['u1'], ['u1']);
+    const grp = await createAlbum(ctx, 'u1', { ownerType: 'group', ownerId: 'g1', title: 'g' }, 'now');
+    await expect(getAlbum(ctx, grp.albumId, 'stranger')).rejects.toSatisfy(
+      (e: unknown) => e instanceof AppError && e.status === 404,
+    );
+  });
+});
+
+describe('listAlbums（グループ指定）', () => {
+  it('指定したグループのアルバムだけを返す（個人・他グループは含めない）', async () => {
+    seedGroup('g1', ['u1'], ['u1']);
+    seedGroup('g2', ['u1'], ['u1']);
+    mem.put(metaKeys.userGroup('u1', 'g1'), { groupId: 'g1' });
+    mem.put(metaKeys.userGroup('u1', 'g2'), { groupId: 'g2' });
+    await createAlbum(ctx, 'u1', { ownerType: 'user', ownerId: 'u1', title: 'personal' }, '2026-01-01T00:00:00Z');
+    await createAlbum(ctx, 'u1', { ownerType: 'group', ownerId: 'g1', title: 'old' }, '2026-01-01T00:00:00Z');
+    await createAlbum(ctx, 'u1', { ownerType: 'group', ownerId: 'g1', title: 'new' }, '2026-01-02T00:00:00Z');
+    await createAlbum(ctx, 'u1', { ownerType: 'group', ownerId: 'g2', title: 'other' }, '2026-01-01T00:00:00Z');
+
+    const albums = await listAlbums(ctx, 'u1', { groupId: 'g1' });
+    expect(albums.map((a) => a.title)).toEqual(['new', 'old']); // 新しい順
+    expect(albums.every((a) => a.ownerId === 'g1' && a.ownerName === 'g')).toBe(true);
+  });
+
+  it('非メンバー・存在しないグループ・不正なIDは404（存在を推測させない）', async () => {
+    seedGroup('g1', ['member'], ['member']);
+    await createAlbum(ctx, 'member', { ownerType: 'group', ownerId: 'g1', title: 'secret' }, 'now');
+    // user-groups の残骸があっても正本で判定する
+    mem.put(metaKeys.userGroup('stranger', 'g1'), { groupId: 'g1' });
+
+    for (const groupId of ['g1', 'no-such-group', '', 'g1/../x', 'x'.repeat(129)]) {
+      await expect(listAlbums(ctx, 'stranger', { groupId })).rejects.toSatisfy(
+        (e: unknown) => e instanceof AppError && e.status === 404,
+      );
+    }
+  });
+
+  it('アルバムのないグループは空配列', async () => {
+    seedGroup('g1', ['u1'], ['u1']);
+    expect(await listAlbums(ctx, 'u1', { groupId: 'g1' })).toEqual([]);
+  });
+});
+
+describe('削除済みのグループ（要件2-15）', () => {
+  it('アルバムが残っていても一覧に出ず、閲覧・新規作成もできない（記録は残る）', async () => {
+    seedGroup('g1', ['u1'], ['u1']);
+    mem.put(metaKeys.userGroup('u1', 'g1'), { groupId: 'g1' });
+    const a = await createAlbum(ctx, 'u1', { ownerType: 'group', ownerId: 'g1', title: 't' }, 'now');
+    // 削除と同時に作られたアルバムが残った場合を想定する
+    mem.put(metaKeys.group('g1'), {
+      ...(mem.get(metaKeys.group('g1')) as Group),
+      deletedAt: '2026-01-02T00:00:00Z',
+    });
+
+    expect(await listAlbums(ctx, 'u1')).toEqual([]);
+    await expect(listAlbums(ctx, 'u1', { groupId: 'g1' })).rejects.toSatisfy(
+      (e: unknown) => e instanceof AppError && e.status === 404,
+    );
+    await expect(getAlbum(ctx, a.albumId, 'u1')).rejects.toSatisfy(
+      (e: unknown) => e instanceof AppError && e.status === 404,
+    );
+    await expect(
+      createAlbum(ctx, 'u1', { ownerType: 'group', ownerId: 'g1', title: 't2' }, 'now'),
+    ).rejects.toSatisfy((e: unknown) => e instanceof AppError && e.status === 403);
+    expect(mem.has(metaKeys.album('group', 'g1', a.albumId))).toBe(true);
+  });
 });
 
 describe('updateAlbum', () => {
@@ -116,6 +197,17 @@ describe('updateAlbum', () => {
     const a = await createAlbum(ctx, 'u1', { ownerType: 'user', ownerId: 'u1', title: 't' }, 'now');
     const updated = await updateAlbum(ctx, a.albumId, 'u1', { title: 'new' }, '2026-02-01T00:00:00Z');
     expect(updated.title).toBe('new');
+    expect(updated.ownerName).toBeNull();
+  });
+
+  it('グループのアルバムを編集しても所属（グループ名）を返し、保存する正本には含めない', async () => {
+    seedGroup('g1', ['u1'], ['u1']);
+    const a = await createAlbum(ctx, 'u1', { ownerType: 'group', ownerId: 'g1', title: 't' }, 'now');
+    const updated = await updateAlbum(ctx, a.albumId, 'u1', { title: 'new' }, 'now');
+    expect(updated.ownerName).toBe('g');
+    const stored = mem.get(metaKeys.album('group', 'g1', a.albumId)) as Record<string, unknown>;
+    expect(stored.title).toBe('new');
+    expect('ownerName' in stored).toBe(false); // グループ名は正本（groups/）から都度引く
   });
 
   it('表紙は同一アルバムの ready 写真のみ。動画や別アルバムは422', async () => {

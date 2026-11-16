@@ -8,6 +8,7 @@ import {
   canPostComment,
   canDeleteComment,
   canManageInvite,
+  canManageGroup,
   isGroupMember,
   isGroupAdmin,
 } from './authz.js';
@@ -156,5 +157,29 @@ describe('canManageInvite', () => {
   it('管理者のみ', () => {
     expect(canManageInvite(group, 'admin')).toBe(true);
     expect(canManageInvite(group, 'member')).toBe(false);
+  });
+});
+describe('canManageGroup（グループ名の変更・削除）', () => {
+  it('管理者のみ', () => {
+    expect(canManageGroup(group, 'admin')).toBe(true);
+    expect(canManageGroup(group, 'member')).toBe(false);
+    expect(canManageGroup(group, 'stranger')).toBe(false);
+  });
+});
+describe('削除済みのグループ', () => {
+  const deleted: Group = { ...group, deletedAt: '2026-01-02T00:00:00Z', deletedBy: 'admin' };
+  it('メンバー・管理者はいないものとして扱い、閲覧・作成・投稿・招待とグループの管理を許さない', () => {
+    expect(isGroupMember(deleted, 'member')).toBe(false);
+    expect(isGroupAdmin(deleted, 'admin')).toBe(false);
+    expect(canViewAlbum(groupAlbum, 'member', deleted)).toBe(false);
+    expect(canCreateAlbum('group', 'g1', 'admin', deleted)).toBe(false);
+    expect(canUploadMedia(groupAlbum, 'member', deleted)).toBe(false);
+    expect(canPostComment(groupAlbum, 'member', deleted)).toBe(false);
+    expect(canManageInvite(deleted, 'admin')).toBe(false);
+    expect(canManageGroup(deleted, 'admin')).toBe(false);
+  });
+  it('deletedAt が null の旧形式・未削除は従来どおり', () => {
+    expect(isGroupMember({ ...group, deletedAt: null }, 'member')).toBe(true);
+    expect(canManageGroup({ ...group, deletedAt: null }, 'admin')).toBe(true);
   });
 });

@@ -5,6 +5,7 @@
 import type { Invite } from '@photo-album/shared';
 import { getJson, putJsonIfMatch, metaKeys, ConflictError, sha256Hex } from '../repo/index.js';
 import type { AppContext } from './context.js';
+import { getGroup } from './entities.js';
 
 /** 招待が使えない理由。ログイン画面の `login_error` にもそのまま使う。 */
 export type InviteRejectReason =
@@ -30,6 +31,7 @@ export function isPlausibleToken(token: unknown): token is string {
  * - 自分が既に使用済みなら冪等に成功
  * - 他人が使用済みなら invite_used
  *   （allowOrphanReclaim 指定時のみ、claim後に利用者が作られなかった孤児claimを猶予経過後に再claim可）
+ * - 招待先のグループが削除済み・存在しないなら invite_revoked（使用済みにしない）
  * - 同時claimは ETag 競合で片方が負け、読み直して判定する
  */
 export async function claimInvite(
@@ -55,6 +57,10 @@ export async function claimInvite(
       }
     } else if (Date.parse(invite.expiresAt) <= nowMs) {
       return { ok: false, reason: 'invite_expired' };
+    }
+    // 削除されたグループへの招待では、新規登録も参加もさせない（失効と同じ扱い）
+    if (!(await getGroup(ctx, invite.groupId))) {
+      return { ok: false, reason: 'invite_revoked' };
     }
 
     const updated: Invite = { ...invite, usedBy: userId, usedAt: new Date(nowMs).toISOString() };

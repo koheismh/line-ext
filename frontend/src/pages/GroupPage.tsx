@@ -1,10 +1,20 @@
-// グループページ。メンバー一覧・招待URL発行と有効な招待の失効（管理者のみ, 要件2-3/2-8/2-9）。
+// グループページ。グループは「メンバーの集まり」で、共有するアルバムはグループの中に作る。
+// このグループのアルバム一覧と作成（メンバー, 要件2-9/3-1）、メンバー一覧、
+// 招待URL発行と有効な招待の失効（管理者のみ, 要件2-3/2-8）、
+// グループ名の変更と削除（管理者のみ。削除はアルバムが無いときだけ, 要件2-14/2-15）。
 import { useCallback, useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
-import type { Group, InviteSummary } from '@photo-album/shared';
+import { useNavigate, useParams } from 'react-router-dom';
+import {
+  ALBUM_TITLE_MAX_LENGTH,
+  GROUP_NAME_MAX_LENGTH,
+  type AlbumListItem,
+  type Group,
+  type InviteSummary,
+} from '@photo-album/shared';
 import { api, errorMessage } from '../services/api.js';
 import { useSession } from '../store/session.js';
 import { formatDateTime } from '../lib/format.js';
+import { AlbumGrid } from '../components/AlbumGrid.js';
 import {
   Alert,
   Avatar,
@@ -13,6 +23,7 @@ import {
   Card,
   CardTitle,
   EmptyState,
+  Field,
   Loading,
   Page,
 } from '../components/ui/index.js';
@@ -21,8 +32,17 @@ import styles from './GroupPage.module.css';
 export function GroupPage() {
   const { groupId = '' } = useParams();
   const { userId } = useSession();
+  const navigate = useNavigate();
   const [group, setGroup] = useState<Group | null>(null);
+  /** 編集中のグループ名。null は未編集（いまの名前を表示する）。 */
+  const [newName, setNewName] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const [members, setMembers] = useState<{ userId: string; displayName: string }[]>([]);
+  const [albums, setAlbums] = useState<AlbumListItem[]>([]);
+  const [albumTitle, setAlbumTitle] = useState('');
+  const [creating, setCreating] = useState(false);
   const [invites, setInvites] = useState<InviteSummary[]>([]);
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -32,9 +52,13 @@ export function GroupPage() {
 
   const refresh = useCallback(async () => {
     try {
-      const res = await api.groups.detail(groupId);
+      const [res, list] = await Promise.all([
+        api.groups.detail(groupId),
+        api.albums.list(groupId),
+      ]);
       setGroup(res.group);
       setMembers(res.members);
+      setAlbums(list.albums);
       setError(null);
       if (userId && res.group.adminUserIds.includes(userId)) {
         setInvites((await api.groups.invites(groupId)).invites);
@@ -47,6 +71,63 @@ export function GroupPage() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  /** このグループにアルバムを作る（所有主体はこのグループ。認可はサーバが正本で判定する）。 */
+  async function createAlbum(e: React.FormEvent) {
+    e.preventDefault();
+    const title = albumTitle.trim();
+    if (!title) return;
+    setCreating(true);
+    try {
+      await api.albums.create({ ownerType: 'group', ownerId: groupId, title });
+      setAlbumTitle('');
+      await refresh();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  /** グループ名を変える（管理者のみ。権限と名前の検証はサーバが行う）。 */
+  async function rename(e: React.FormEvent) {
+    e.preventDefault();
+    if (!group) return;
+    const name = (newName ?? group.name).trim();
+    if (!name || name === group.name) return;
+    setRenaming(true);
+    try {
+      const updated = await api.groups.rename(groupId, name);
+      setGroup(updated);
+      setNewName(null);
+      setNotice('グループ名を変更しました。');
+      setError(null);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setRenaming(false);
+    }
+  }
+
+  /** グループを削除する（管理者のみ。アルバムがあるグループはサーバが拒否する）。 */
+  async function remove() {
+    if (!group) return;
+    if (
+      !confirm(
+        `グループ「${group.name}」を削除しますか？ メンバー全員がこのグループを見られなくなり、招待URLも使えなくなります。`,
+      )
+    ) {
+      return;
+    }
+    setDeleting(true);
+    try {
+      await api.groups.remove(groupId);
+      navigate('/albums', { replace: true });
+    } catch (err) {
+      setError(errorMessage(err));
+      setDeleting(false);
+    }
+  }
 
   async function issue() {
     try {
@@ -89,8 +170,51 @@ export function GroupPage() {
       title={group?.name ?? 'グループ'}
       emoji="👥"
       back={{ to: '/albums', label: 'アルバム・グループ一覧' }}
+      lead={
+        group
+          ? `メンバー${members.length}人のグループです。このグループのアルバムは、メンバー全員が見たり写真・動画を追加したりできます。`
+          : undefined
+      }
     >
       {error && <Alert tone="danger">{error}</Alert>}
+      {notice && <Alert tone="success">{notice}</Alert>}
+
+      {group && (
+        <section aria-labelledby="group-albums" className={styles.section}>
+          <h2 id="group-albums" className={styles.sectionTitle}>
+            <span aria-hidden="true">📚</span> このグループのアルバム
+          </h2>
+          {albums.length === 0 ? (
+            <EmptyState emoji="🌱" title="まだアルバムがありません">
+              下の「アルバムを作る」から作ると、メンバーみんなで見られます。
+            </EmptyState>
+          ) : (
+            <AlbumGrid albums={albums} />
+          )}
+        </section>
+      )}
+
+      {group && (
+        <Card as="section" tone="primary" aria-labelledby="create-group-album">
+          <CardTitle id="create-group-album" emoji="✨">
+            アルバムを作る
+          </CardTitle>
+          <form className={styles.form} onSubmit={(e) => void createAlbum(e)}>
+            <Field label="アルバム名" className={styles.grow}>
+              <input
+                value={albumTitle}
+                onChange={(e) => setAlbumTitle(e.target.value)}
+                maxLength={ALBUM_TITLE_MAX_LENGTH}
+                placeholder="例: 夏の旅行"
+                required
+              />
+            </Field>
+            <Button type="submit" variant="primary" disabled={creating} className={styles.submit}>
+              作成する
+            </Button>
+          </form>
+        </Card>
+      )}
 
       {group && (
         <Card as="section" aria-labelledby="members">
@@ -152,6 +276,50 @@ export function GroupPage() {
               ))}
             </ul>
           )}
+        </Card>
+      )}
+
+      {isAdmin && group && (
+        <Card as="section" aria-labelledby="group-settings">
+          <CardTitle id="group-settings" emoji="⚙️">
+            グループの設定
+          </CardTitle>
+          <form className={styles.form} onSubmit={(e) => void rename(e)}>
+            <Field label="グループ名" hint={`${GROUP_NAME_MAX_LENGTH}文字以内`} className={styles.grow}>
+              <input
+                value={newName ?? group.name}
+                onChange={(e) => setNewName(e.target.value)}
+                maxLength={GROUP_NAME_MAX_LENGTH}
+                required
+              />
+            </Field>
+            <Button
+              type="submit"
+              disabled={
+                renaming ||
+                !(newName ?? group.name).trim() ||
+                (newName ?? group.name).trim() === group.name
+              }
+              className={styles.submit}
+            >
+              名前を変える
+            </Button>
+          </form>
+
+          <h3 className={styles.subTitle}>グループの削除</h3>
+          <p className={styles.muted}>
+            {albums.length > 0
+              ? 'アルバムがあるグループは削除できません（アルバムを消す機能はまだありません）。'
+              : '削除すると、メンバー全員がこのグループを見られなくなり、招待URLも使えなくなります。'}
+          </p>
+          <Button
+            variant="danger"
+            icon="🗑"
+            disabled={deleting || albums.length > 0}
+            onClick={() => void remove()}
+          >
+            グループを削除
+          </Button>
         </Card>
       )}
     </Page>

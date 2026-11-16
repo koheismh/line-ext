@@ -6,14 +6,19 @@
 
 import type { Album, Group, Media, Comment, OwnerType } from '@photo-album/shared';
 
-/** グループのメンバーか（正本で判定）。 */
+/** グループのメンバーか（正本で判定）。削除済みのグループには誰も属さない。 */
 export function isGroupMember(group: Group, userId: string): boolean {
-  return group.memberUserIds.includes(userId);
+  return !group.deletedAt && group.memberUserIds.includes(userId);
 }
 
-/** グループの管理者か（正本で判定）。 */
+/** グループの管理者か（正本で判定）。削除済みのグループには管理者もいない。 */
 export function isGroupAdmin(group: Group, userId: string): boolean {
-  return group.adminUserIds.includes(userId);
+  return !group.deletedAt && group.adminUserIds.includes(userId);
+}
+
+/** グループ名の変更・グループの削除ができるか＝グループ管理者のみ（招待の管理と同じ）。 */
+export function canManageGroup(group: Group, userId: string): boolean {
+  return isGroupAdmin(group, userId);
 }
 
 /**

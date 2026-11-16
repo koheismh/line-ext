@@ -1,6 +1,8 @@
 // グループと招待のユースケース（app層）。
 // requirements 要件2 に準拠。
 //  - グループ作成: 作成者を管理者兼メンバーに。name 必須。
+//  - グループ名の変更・グループの削除: 管理者のみ。削除はアルバムが無いグループに限り、
+//    記録を消さずに削除済み（deletedAt）にする。削除済みは存在しないものとして扱う。
 //  - 所属グループ一覧: user-groups インデックス → 正本で照合。
 //  - 招待発行/一覧/失効: 管理者のみ。トークンはハッシュをキーに保存（平文は保存しない）。
 //  - 招待受け入れ: 明示操作・冪等・期限/失効検証・user-groups 修復。
@@ -23,18 +25,29 @@ import {
   putJsonIfAbsent,
   putJson,
   listJson,
+  listKeys,
   metaKeys,
   sha256Hex,
   ConflictError,
 } from '../repo/index.js';
-import { canManageInvite, isGroupAdmin, isGroupMember } from '../domain/authz.js';
+import { canManageGroup, canManageInvite, isGroupAdmin, isGroupMember } from '../domain/authz.js';
 import { validateText } from '../domain/validation.js';
 import type { AppContext } from './context.js';
 import { claimInvite, isPlausibleToken, type InviteRejectReason } from './invites.js';
 import { AppError, forbidden, notFoundOrForbidden } from './errors.js';
-import { getGroup } from './entities.js';
+import { getGroup, getGroupIncludingDeleted } from './entities.js';
 
 const MAX_RETRY = 5;
+
+/** グループ名を検証する（前後の空白は除く。必須・暫定50文字以内）。作成と名前の変更で共通。 */
+function validateGroupName(name: unknown): string {
+  const v = validateText(typeof name === 'string' ? name.trim() : name, {
+    label: 'グループ名',
+    max: GROUP_NAME_MAX_LENGTH,
+  });
+  if (!v.ok) throw new AppError(422, 'invalid_group_name', v.message);
+  return v.value;
+}
 
 /** グループを作成し、作成者を管理者兼メンバーにする。 */
 export async function createGroup(
@@ -43,14 +56,9 @@ export async function createGroup(
   name: unknown,
   now: string,
 ): Promise<Group> {
-  const v = validateText(typeof name === 'string' ? name.trim() : name, {
-    label: 'グループ名',
-    max: GROUP_NAME_MAX_LENGTH,
-  });
-  if (!v.ok) throw new AppError(422, 'invalid_group_name', v.message);
   const group: Group = {
     groupId: randomId(),
-    name: v.value,
+    name: validateGroupName(name),
     adminUserIds: [userId],
     memberUserIds: [userId],
     createdBy: userId,
@@ -87,7 +95,12 @@ export async function loadMemberGroups(ctx: AppContext, userId: string): Promise
 export async function listGroups(ctx: AppContext, userId: string): Promise<GroupSummary[]> {
   const groups = await loadMemberGroups(ctx, userId);
   return groups
-    .map((g) => ({ groupId: g.groupId, name: g.name, isAdmin: isGroupAdmin(g, userId) }))
+    .map((g) => ({
+      groupId: g.groupId,
+      name: g.name,
+      memberCount: g.memberUserIds.length,
+      isAdmin: isGroupAdmin(g, userId),
+    }))
     .sort((a, b) => a.name.localeCompare(b.name, 'ja'));
 }
 
@@ -115,6 +128,91 @@ export async function getGroupDetail(
     }),
   );
   return { group, members };
+}
+
+/**
+ * グループ名を変更する（管理者のみ）。非メンバー・削除済みは404、管理者でないメンバーは403。
+ * グループ名はアルバムなどに複製していないため、変更はすべての画面にそのまま反映される。
+ * 参加などのシステム更新と競合した場合は、読み直して（権限も確認し直して）再試行する。
+ */
+export async function renameGroup(
+  ctx: AppContext,
+  groupId: string,
+  userId: string,
+  name: unknown,
+  now: string,
+): Promise<Group> {
+  const newName = validateGroupName(name);
+  for (let attempt = 0; attempt < MAX_RETRY; attempt++) {
+    const rec = await getGroup(ctx, groupId);
+    if (!rec || !isGroupMember(rec.value, userId)) throw notFoundOrForbidden();
+    if (!canManageGroup(rec.value, userId)) {
+      throw forbidden('グループ名を変更できるのは管理者のみです。');
+    }
+    if (rec.value.name === newName) return rec.value; // 変更なし（二重送信も冪等）
+    const updated: Group = { ...rec.value, name: newName, updatedAt: now };
+    try {
+      await putJsonIfMatch(ctx.metaBucket, metaKeys.group(groupId), updated, rec.etag);
+      return updated;
+    } catch (err) {
+      if (err instanceof ConflictError && attempt < MAX_RETRY - 1) continue;
+      throw err;
+    }
+  }
+  throw new ConflictError();
+}
+
+/**
+ * グループを削除する（管理者のみ）。要件2-15。
+ * - アルバムが1件でもあるグループは削除しない（409 group_not_empty）。アルバム削除は MVP の対象外のため
+ * - 記録は消さず deletedAt / deletedBy を付ける（メタデータはバージョニングしておらず、消すと戻せないため）。
+ *   削除済みのグループは getGroup / isGroupMember で存在しないものとして扱われ、招待も使えなくなる
+ * - 二重実行は冪等: 削除済みでも、削除前の管理者には成功を返す。それ以外には存在を隠す（404）
+ * - user-groups の検索用インデックスは残す（正本照合で除外されるため害がない）
+ */
+export async function deleteGroup(
+  ctx: AppContext,
+  groupId: string,
+  userId: string,
+  now: string,
+): Promise<void> {
+  for (let attempt = 0; attempt < MAX_RETRY; attempt++) {
+    const rec = await getGroupIncludingDeleted(ctx, groupId);
+    if (!rec) throw notFoundOrForbidden();
+    const group = rec.value;
+    if (group.deletedAt) {
+      if (group.adminUserIds.includes(userId)) return;
+      throw notFoundOrForbidden();
+    }
+    if (!isGroupMember(group, userId)) throw notFoundOrForbidden();
+    if (!canManageGroup(group, userId)) {
+      throw forbidden('グループを削除できるのは管理者のみです。');
+    }
+    if (await hasAlbums(ctx, groupId)) {
+      throw new AppError(
+        409,
+        'group_not_empty',
+        'アルバムがあるグループは削除できません。グループを削除できるのは、アルバムが1つもないときだけです。',
+      );
+    }
+    const updated: Group = { ...group, deletedAt: now, deletedBy: userId, updatedAt: now };
+    try {
+      await putJsonIfMatch(ctx.metaBucket, metaKeys.group(groupId), updated, rec.etag);
+      return;
+    } catch (err) {
+      if (err instanceof ConflictError && attempt < MAX_RETRY - 1) continue;
+      throw err;
+    }
+  }
+  throw new ConflictError();
+}
+
+/** グループにアルバムが1件でもあるか（キーの有無だけを見る）。 */
+async function hasAlbums(ctx: AppContext, groupId: string): Promise<boolean> {
+  const page = await listKeys(ctx.metaBucket, metaKeys.albumsPrefix('group', groupId), {
+    maxKeys: 1,
+  });
+  return page.keys.length > 0;
 }
 
 export interface IssuedInvite {
@@ -254,10 +352,14 @@ export async function acceptInvite(
   return { groupId };
 }
 
-/** メンバー追加をETag条件付きで行う。既にメンバーなら何もしない（冪等）。 */
+/**
+ * メンバー追加をETag条件付きで行う。既にメンバーなら何もしない（冪等）。
+ * 招待の確認後にグループが削除された場合は、削除済みのグループに人を加えない（410）。
+ */
 async function addMemberWithRetry(ctx: AppContext, groupId: string, userId: string): Promise<void> {
   for (let attempt = 0; attempt < MAX_RETRY; attempt++) {
     const rec = await getJsonOrThrow<Group>(ctx.metaBucket, metaKeys.group(groupId));
+    if (rec.value.deletedAt) throw inviteRejection('invite_revoked');
     if (rec.value.memberUserIds.includes(userId)) {
       return; // 既にメンバー（冪等）
     }

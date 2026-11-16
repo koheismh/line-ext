@@ -4,6 +4,7 @@
 import type {
   ApiError,
   Album,
+  AlbumDetail,
   AlbumListItem,
   Comment,
   CommentListResponse,
@@ -86,6 +87,12 @@ export const api = {
         'GET',
         `/api/groups/${encodeURIComponent(groupId)}`,
       ),
+    /** グループ名の変更（管理者のみ）。 */
+    rename: (groupId: string, name: string) =>
+      request<Group>('PATCH', `/api/groups/${encodeURIComponent(groupId)}`, { name }),
+    /** グループの削除（管理者のみ。アルバムが無いグループに限る）。 */
+    remove: (groupId: string) =>
+      request<void>('DELETE', `/api/groups/${encodeURIComponent(groupId)}`),
     issueInvite: (groupId: string) =>
       request<{ inviteId: string; token: string; expiresAt: string }>(
         'POST',
@@ -103,12 +110,18 @@ export const api = {
   },
 
   albums: {
-    list: () => request<{ albums: AlbumListItem[] }>('GET', '/api/albums'),
+    /** 閲覧できるアルバム一覧。groupId を渡すとそのグループのアルバムだけ（グループの画面用）。 */
+    list: (groupId?: string) =>
+      request<{ albums: AlbumListItem[] }>(
+        'GET',
+        groupId ? `/api/albums?groupId=${encodeURIComponent(groupId)}` : '/api/albums',
+      ),
     create: (input: { ownerType: OwnerType; ownerId: string; title: string; description?: string }) =>
       request<Album>('POST', '/api/albums', input),
-    get: (albumId: string) => request<Album>('GET', `/api/albums/${encodeURIComponent(albumId)}`),
+    get: (albumId: string) =>
+      request<AlbumDetail>('GET', `/api/albums/${encodeURIComponent(albumId)}`),
     update: (albumId: string, input: { title?: string; description?: string; coverMediaId?: string | null }) =>
-      request<Album>('PATCH', `/api/albums/${encodeURIComponent(albumId)}`, input),
+      request<AlbumDetail>('PATCH', `/api/albums/${encodeURIComponent(albumId)}`, input),
     media: (albumId: string, pageToken?: string) =>
       request<MediaPage>(
         'GET',

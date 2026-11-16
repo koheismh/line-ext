@@ -106,6 +106,17 @@ export async function route(
       const userId = await auth();
       return ok(await groups.getGroupDetail(app, groupDetail[1]!, userId));
     }
+    // グループ名の変更・グループの削除（管理者のみ。削除はアルバムが無いグループに限る）
+    if (method === 'PATCH' && groupDetail) {
+      const userId = await auth();
+      const body = parseBody<{ name: string }>(event);
+      return ok(await groups.renameGroup(app, groupDetail[1]!, userId, body.name, nowIso()));
+    }
+    if (method === 'DELETE' && groupDetail) {
+      const userId = await auth();
+      await groups.deleteGroup(app, groupDetail[1]!, userId, nowIso());
+      return noContent();
+    }
     const groupInvites = path.match(/^\/api\/groups\/([^/]+)\/invites$/);
     if (method === 'POST' && groupInvites) {
       const userId = await auth();
@@ -132,7 +143,12 @@ export async function route(
     // --- albums ---
     if (method === 'GET' && path === '/api/albums') {
       const userId = await auth();
-      return ok({ albums: await albums.listAlbums(app, userId) });
+      // groupId 指定時はそのグループのアルバムだけ（グループの画面用。非メンバーは404）
+      return ok({
+        albums: await albums.listAlbums(app, userId, {
+          ...(q.groupId !== undefined ? { groupId: q.groupId } : {}),
+        }),
+      });
     }
     if (method === 'POST' && path === '/api/albums') {
       const userId = await auth();

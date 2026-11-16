@@ -3,6 +3,34 @@
   font-size: var(--font-size-sm);
 }
 
+/* このグループのアルバム */
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.sectionTitle {
+  margin: 0;
+  font-size: var(--font-size-xl);
+}
+
+/* アルバムを作るフォーム（アルバム一覧の作成フォームと同じ並べ方） */
+.form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+
+.grow {
+  flex: 1 1 14rem;
+}
+
+.submit {
+  flex-shrink: 0;
+}
+
 .members {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));

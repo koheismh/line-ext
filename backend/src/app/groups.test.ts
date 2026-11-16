@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { s3 } from '../repo/s3Client.js';
 import { installMemoryS3, type MemoryS3 } from '../testing/memoryS3.js';
 import {
@@ -9,10 +10,12 @@ import {
   revokeInvite,
   acceptInvite,
   listGroups,
+  renameGroup,
+  deleteGroup,
 } from './groups.js';
 import { AppError } from './errors.js';
 import { metaKeys, sha256Hex } from '../repo/keys.js';
-import type { Group, User } from '@photo-album/shared';
+import type { Group, Invite, User } from '@photo-album/shared';
 
 const ctx = { metaBucket: 'meta', mediaBucket: 'media' };
 let mem: MemoryS3;
@@ -58,7 +61,15 @@ describe('listGroups', () => {
     const other = await createGroup(ctx, 'u2', 'よそ', 'now');
     mem.put(metaKeys.userGroup('u1', other.groupId), { groupId: other.groupId }); // 残骸
     const groups = await listGroups(ctx, 'u1');
-    expect(groups).toEqual([{ groupId: mine.groupId, name: 'うち', isAdmin: true }]);
+    expect(groups).toEqual([{ groupId: mine.groupId, name: 'うち', memberCount: 1, isAdmin: true }]);
+  });
+
+  it('メンバー数は正本の人数。管理者でないグループは isAdmin=false', async () => {
+    const g = await createGroup(ctx, 'admin', 'みんな', 'now');
+    addMember(g.groupId, 'u2');
+    mem.put(metaKeys.userGroup('u2', g.groupId), { groupId: g.groupId });
+    const groups = await listGroups(ctx, 'u2');
+    expect(groups).toEqual([{ groupId: g.groupId, name: 'みんな', memberCount: 2, isAdmin: false }]);
   });
 });
 
@@ -167,6 +178,146 @@ describe('acceptInvite', () => {
     await expect(acceptInvite(ctx, invite.token, 'u2', Date.now())).rejects.toSatisfy(
       (e: unknown) => e instanceof AppError && e.status === 410,
     );
+  });
+});
+
+/** AppError のステータス（と任意でコード）を確かめる。 */
+function isAppError(status: number, code?: string) {
+  return (e: unknown) => e instanceof AppError && e.status === status && (!code || e.code === code);
+}
+
+/**
+ * key を最初に読んだ直後に、別の処理が正本を更新した状況を再現する（ETag 競合の再試行の確認用）。
+ * 読み込み自体は memoryS3 と同じ内容を返す。
+ */
+function interfereAfterFirstRead(key: string, interfere: () => void) {
+  let done = false;
+  mem.mock.on(GetObjectCommand).callsFake((input) => {
+    const rec = store.get(input.Key as string);
+    if (!rec) throw Object.assign(new Error('NoSuchKey'), { name: 'NoSuchKey' });
+    const res = { Body: { transformToString: async () => rec.body }, ETag: `"${rec.etag}"` };
+    if (input.Key === key && !done) {
+      done = true;
+      interfere();
+    }
+    return res;
+  });
+}
+
+describe('renameGroup（要件2-14）', () => {
+  it('管理者は名前を変更でき（前後の空白は除く）、一覧と詳細に反映される', async () => {
+    const g = await createGroup(ctx, 'admin', 'うち', '2026-01-01T00:00:00Z');
+    const renamed = await renameGroup(ctx, g.groupId, 'admin', ' 山田家 ', '2026-01-02T00:00:00Z');
+    expect(renamed.name).toBe('山田家');
+    expect(renamed.updatedAt).toBe('2026-01-02T00:00:00Z');
+    expect((mem.get(metaKeys.group(g.groupId)) as Group).name).toBe('山田家');
+    expect((await listGroups(ctx, 'admin')).map((x) => x.name)).toEqual(['山田家']);
+  });
+
+  it('同じ名前の二重送信は書き込まずに成功する', async () => {
+    const g = await createGroup(ctx, 'admin', 'うち', '2026-01-01T00:00:00Z');
+    await renameGroup(ctx, g.groupId, 'admin', '山田家', '2026-01-02T00:00:00Z');
+    const again = await renameGroup(ctx, g.groupId, 'admin', '山田家', '2026-01-03T00:00:00Z');
+    expect(again.updatedAt).toBe('2026-01-02T00:00:00Z'); // 2回目は変更なし
+  });
+
+  it('管理者でないメンバーは403、非メンバーは404、不正な名前は422（いずれも変わらない）', async () => {
+    const g = await createGroup(ctx, 'admin', 'うち', 'now');
+    addMember(g.groupId, 'member');
+    await expect(renameGroup(ctx, g.groupId, 'member', 'x', 'now')).rejects.toSatisfy(isAppError(403));
+    await expect(renameGroup(ctx, g.groupId, 'stranger', 'x', 'now')).rejects.toSatisfy(isAppError(404));
+    await expect(renameGroup(ctx, 'no-such-group', 'admin', 'x', 'now')).rejects.toSatisfy(isAppError(404));
+    for (const bad of ['   ', 'x'.repeat(51), undefined, 123]) {
+      await expect(renameGroup(ctx, g.groupId, 'admin', bad, 'now')).rejects.toSatisfy(
+        isAppError(422, 'invalid_group_name'),
+      );
+    }
+    expect((mem.get(metaKeys.group(g.groupId)) as Group).name).toBe('うち');
+  });
+
+  it('同時に誰かが参加しても、読み直して変更し、参加した人を消さない', async () => {
+    const g = await createGroup(ctx, 'admin', 'うち', 'now');
+    interfereAfterFirstRead(metaKeys.group(g.groupId), () => addMember(g.groupId, 'u2'));
+    await renameGroup(ctx, g.groupId, 'admin', '山田家', 'now');
+    const stored = mem.get(metaKeys.group(g.groupId)) as Group;
+    expect(stored.name).toBe('山田家');
+    expect(stored.memberUserIds).toEqual(['admin', 'u2']);
+  });
+});
+
+describe('deleteGroup（要件2-15）', () => {
+  it('アルバムのないグループを管理者が削除すると、記録を残したまま全員から見えなくなる', async () => {
+    const g = await createGroup(ctx, 'admin', 'うち', '2026-01-01T00:00:00Z');
+    addMember(g.groupId, 'u2');
+    mem.put(metaKeys.userGroup('u2', g.groupId), { groupId: g.groupId });
+
+    await deleteGroup(ctx, g.groupId, 'admin', '2026-01-02T00:00:00Z');
+
+    const stored = mem.get(metaKeys.group(g.groupId)) as Group;
+    expect(stored.deletedAt).toBe('2026-01-02T00:00:00Z');
+    expect(stored.deletedBy).toBe('admin');
+    expect(stored.memberUserIds).toEqual(['admin', 'u2']); // 復元できるよう消さない
+    expect(await listGroups(ctx, 'admin')).toEqual([]);
+    expect(await listGroups(ctx, 'u2')).toEqual([]);
+    await expect(getGroupDetail(ctx, g.groupId, 'u2')).rejects.toSatisfy(isAppError(404));
+    await expect(issueInvite(ctx, g.groupId, 'admin', Date.now())).rejects.toSatisfy(isAppError(404));
+    await expect(renameGroup(ctx, g.groupId, 'admin', 'x', 'now')).rejects.toSatisfy(isAppError(404));
+  });
+
+  it('アルバムが1つでもあるグループは409で削除しない', async () => {
+    const g = await createGroup(ctx, 'admin', 'うち', 'now');
+    mem.put(metaKeys.album('group', g.groupId, 'a1'), { albumId: 'a1' });
+    await expect(deleteGroup(ctx, g.groupId, 'admin', 'now')).rejects.toSatisfy(
+      isAppError(409, 'group_not_empty'),
+    );
+    expect((mem.get(metaKeys.group(g.groupId)) as Group).deletedAt).toBeUndefined();
+    expect(await listGroups(ctx, 'admin')).toHaveLength(1);
+  });
+
+  it('二重実行は冪等に成功する。管理者でないメンバーは403、非メンバーと削除後の他人は404', async () => {
+    const g = await createGroup(ctx, 'admin', 'うち', 'now');
+    addMember(g.groupId, 'member');
+    await expect(deleteGroup(ctx, g.groupId, 'member', 'now')).rejects.toSatisfy(isAppError(403));
+    await expect(deleteGroup(ctx, g.groupId, 'stranger', 'now')).rejects.toSatisfy(isAppError(404));
+    await expect(deleteGroup(ctx, 'no-such-group', 'admin', 'now')).rejects.toSatisfy(isAppError(404));
+
+    await deleteGroup(ctx, g.groupId, 'admin', '2026-01-02T00:00:00Z');
+    await deleteGroup(ctx, g.groupId, 'admin', '2026-01-03T00:00:00Z'); // 二重クリック
+    expect((mem.get(metaKeys.group(g.groupId)) as Group).deletedAt).toBe('2026-01-02T00:00:00Z');
+    await expect(deleteGroup(ctx, g.groupId, 'member', 'now')).rejects.toSatisfy(isAppError(404));
+  });
+
+  it('同時に誰かが参加しても、読み直して削除する', async () => {
+    const g = await createGroup(ctx, 'admin', 'うち', 'now');
+    interfereAfterFirstRead(metaKeys.group(g.groupId), () => addMember(g.groupId, 'u2'));
+    await deleteGroup(ctx, g.groupId, 'admin', '2026-01-02T00:00:00Z');
+    const stored = mem.get(metaKeys.group(g.groupId)) as Group;
+    expect(stored.deletedAt).toBe('2026-01-02T00:00:00Z');
+    expect(stored.memberUserIds).toEqual(['admin', 'u2']);
+  });
+
+  it('削除したグループの招待では参加できず、招待も使用済みにならない（410 invite_revoked）', async () => {
+    const g = await createGroup(ctx, 'admin', 'うち', 'now');
+    const invite = await issueInvite(ctx, g.groupId, 'admin', Date.now());
+    await deleteGroup(ctx, g.groupId, 'admin', 'now');
+
+    await expect(acceptInvite(ctx, invite.token, 'u2', Date.now())).rejects.toSatisfy(
+      isAppError(410, 'invite_revoked'),
+    );
+    expect((mem.get(metaKeys.inviteByHash(invite.inviteId)) as Invite).usedBy).toBeUndefined();
+    expect((mem.get(metaKeys.group(g.groupId)) as Group).memberUserIds).not.toContain('u2');
+  });
+
+  it('参加済みの人が招待を再実行しても、削除したグループには戻らない（410）', async () => {
+    const g = await createGroup(ctx, 'admin', 'うち', 'now');
+    const invite = await issueInvite(ctx, g.groupId, 'admin', Date.now());
+    await acceptInvite(ctx, invite.token, 'u2', Date.now());
+    await deleteGroup(ctx, g.groupId, 'admin', 'now');
+
+    await expect(acceptInvite(ctx, invite.token, 'u2', Date.now())).rejects.toSatisfy(
+      isAppError(410, 'invite_revoked'),
+    );
+    expect(await listGroups(ctx, 'u2')).toEqual([]);
   });
 });
 

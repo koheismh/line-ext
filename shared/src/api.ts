@@ -52,18 +52,27 @@ export interface MediaPage {
   nextToken?: string;
 }
 
-/** アルバム一覧の1件。表紙プレビューURLと所有主体名を同梱する。 */
-export interface AlbumListItem extends Album {
-  /** 表紙のプレビュー署名付きURL。表紙なし・未生成は null（プレースホルダ表示）。 */
-  coverPreviewUrl: string | null;
+/**
+ * アルバム詳細（GET/PATCH /api/albums/{albumId}）。所属（所有主体）の表示名を同梱する。
+ * アルバムは必ず「個人」か「グループ」のどちらかに属し、画面には常にその所属を表示する。
+ */
+export interface AlbumDetail extends Album {
   /** group 所有ならグループ名。個人アルバムは null。 */
   ownerName: string | null;
+}
+
+/** アルバム一覧の1件。表紙プレビューURLと所有主体名を同梱する。 */
+export interface AlbumListItem extends AlbumDetail {
+  /** 表紙のプレビュー署名付きURL。表紙なし・未生成は null（プレースホルダ表示）。 */
+  coverPreviewUrl: string | null;
 }
 
 /** 所属グループの概要（GET /api/groups）。 */
 export interface GroupSummary {
   groupId: string;
   name: string;
+  /** メンバーの人数（正本の memberUserIds の数）。グループが「人の集まり」だと分かるように表示する。 */
+  memberCount: number;
   /** 要求者が管理者か（表示制御用。認可はサーバ側で行う）。 */
   isAdmin: boolean;
 }

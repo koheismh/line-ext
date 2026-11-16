@@ -1,17 +1,19 @@
-// アルバム詳細。メディアグリッド（プレビュー）、ページング、アップロード、アルバム編集（作成者のみ）、
-// ビューア、アルバムへのコメント。
+// アルバム詳細。所属（自分だけ／グループ）、メディアグリッド（プレビュー）、ページング、アップロード、
+// アルバム編集（作成者のみ）、ビューア、アルバムへのコメント。
+// グループのアルバムは「グループの中のアルバム」として、戻り先をそのグループの画面にする。
 import { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import {
   ALBUM_DESCRIPTION_MAX_LENGTH,
   ALBUM_TITLE_MAX_LENGTH,
-  type Album,
+  type AlbumDetail,
   type MediaListItem,
 } from '@photo-album/shared';
 import { api, errorMessage } from '../services/api.js';
 import { useSession } from '../store/session.js';
 import { useUpload } from '../features/upload/useUpload.js';
 import { listPending, type PendingUpload } from '../features/upload/pendingStore.js';
+import { AlbumOwner } from '../components/AlbumOwner.js';
 import { MediaViewer } from '../components/MediaViewer.js';
 import { CommentPanel } from '../components/CommentPanel.js';
 import { MediaGrid, isProcessing } from '../components/MediaGrid.js';
@@ -31,7 +33,7 @@ import styles from './AlbumDetailPage.module.css';
 export function AlbumDetailPage() {
   const { albumId = '' } = useParams();
   const { userId } = useSession();
-  const [album, setAlbum] = useState<Album | null>(null);
+  const [album, setAlbum] = useState<AlbumDetail | null>(null);
   const [items, setItems] = useState<MediaListItem[]>([]);
   const [pageCount, setPageCount] = useState(1);
   const [nextToken, setNextToken] = useState<string | undefined>(undefined);
@@ -113,12 +115,25 @@ export function AlbumDetailPage() {
 
   if (!album && !error) return <Loading />;
 
+  // グループのアルバムはグループの画面へ戻る（グループの中にアルバムがある構成）
+  const back =
+    album?.ownerType === 'group'
+      ? { to: `/groups/${encodeURIComponent(album.ownerId)}`, label: album.ownerName ?? 'グループ' }
+      : { to: '/albums', label: 'アルバム一覧' };
+
   return (
     <Page
       title={album?.title ?? 'アルバム'}
       emoji="🖼️"
-      back={{ to: '/albums', label: 'アルバム一覧' }}
-      lead={album?.description || undefined}
+      back={back}
+      lead={
+        album ? (
+          <>
+            <AlbumOwner album={album} />
+            {album.description && <span className={styles.description}>{album.description}</span>}
+          </>
+        ) : undefined
+      }
       actions={
         isCreator && !editing ? (
           <Button size="sm" icon="✏️" onClick={startEdit}>

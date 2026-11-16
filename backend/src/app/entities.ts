@@ -10,7 +10,18 @@ import {
   resolveCommentLocator,
 } from '../repo/locator.js';
 
+/** グループの正本。削除済み（deletedAt あり）は存在しないものとして null を返す。 */
 export async function getGroup(
+  ctx: AppContext,
+  groupId: string,
+): Promise<JsonRecord<Group> | null> {
+  const rec = await getGroupIncludingDeleted(ctx, groupId);
+  if (!rec || rec.value.deletedAt) return null;
+  return rec;
+}
+
+/** 削除済みも含めてグループの正本を読む（削除の二重実行の判定など、限られた用途のみ）。 */
+export async function getGroupIncludingDeleted(
   ctx: AppContext,
   groupId: string,
 ): Promise<JsonRecord<Group> | null> {

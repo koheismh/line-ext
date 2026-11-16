@@ -1,7 +1,8 @@
 // アルバムのユースケース（app層）。requirements 要件3 に準拠。
 //  - 作成: 所有主体の権限確認 → Album 作成 → album-locator 作成
-//  - 一覧: 個人 + 所属グループのアルバムを集約（正本照合）。表紙プレビューURLと所有主体名を同梱
-//  - 詳細: 閲覧権限で判定（authorize）
+//  - 一覧: 個人 + 所属グループのアルバムを集約（正本照合）。表紙プレビューURLと所有主体名を同梱。
+//          グループ指定時はそのグループのアルバムだけ（グループの画面用。非メンバーは404）
+//  - 詳細: 閲覧権限で判定（authorize）。所属（グループ名）を同梱
 //  - 編集: 作成者のみ。表紙は同一アルバム・ready・写真に限定
 //  - 表紙の自動設定/再選定: システム更新は内部で読み直し再試行
 
@@ -10,6 +11,7 @@ import {
   ALBUM_TITLE_MAX_LENGTH,
   randomId,
   type Album,
+  type AlbumDetail,
   type AlbumListItem,
   type Group,
   type Media,
@@ -28,10 +30,10 @@ import {
 } from '../repo/index.js';
 import { createAlbumLocator, resolveAlbumLocator } from '../repo/locator.js';
 import { isValidManualCover, autoCoverOnReady, selectCover, type CoverCandidate } from '../domain/cover.js';
-import { canCreateAlbum } from '../domain/authz.js';
+import { canCreateAlbum, isGroupMember } from '../domain/authz.js';
 import { validateText } from '../domain/validation.js';
 import type { AppContext } from './context.js';
-import { AppError } from './errors.js';
+import { AppError, notFoundOrForbidden } from './errors.js';
 import { authorizeAlbumView, authorizeAlbumEdit } from './authorize.js';
 import { getGroup } from './entities.js';
 import { loadMemberGroups } from './groups.js';
@@ -106,12 +108,27 @@ export async function createAlbum(
   return album;
 }
 
+export interface ListAlbumsOptions {
+  /** 指定すると、そのグループのアルバムだけを返す（グループの画面用）。メンバーでなければ404。 */
+  groupId?: string;
+}
+
 /**
  * ユーザーが閲覧できるアルバム一覧（個人＋所属グループ）。
  * 表紙のプレビューURL（ready のときのみ）と、グループ所有ならグループ名を同梱する。
  * 並び順: 個人 → グループ名順。各所有主体内は作成日時の新しい順（暫定）。
+ * groupId を指定した場合は、そのグループのアルバムだけを返す（メンバーシップは正本で判定）。
  */
-export async function listAlbums(ctx: AppContext, userId: string): Promise<AlbumListItem[]> {
+export async function listAlbums(
+  ctx: AppContext,
+  userId: string,
+  opts: ListAlbumsOptions = {},
+): Promise<AlbumListItem[]> {
+  if (opts.groupId !== undefined) {
+    const group = await getMemberGroup(ctx, opts.groupId, userId);
+    return listGroupAlbums(ctx, group);
+  }
+
   const personal = await listJson<Album>(ctx.metaBucket, metaKeys.albumsPrefix('user', userId));
 
   // 所属グループ（user-groups インデックス → 正本照合）
@@ -119,18 +136,55 @@ export async function listAlbums(ctx: AppContext, userId: string): Promise<Album
     a.name.localeCompare(b.name, 'ja'),
   );
 
-  const byNewest = (a: Album, b: Album) => (a.createdAt < b.createdAt ? 1 : -1);
-  const out: AlbumListItem[] = [];
-  for (const album of personal.sort(byNewest)) {
-    out.push({ ...album, ownerName: null, coverPreviewUrl: await coverPreviewUrl(ctx, album) });
-  }
+  const out = await toListItems(ctx, personal, null);
   for (const g of groups) {
-    const albums = await listJson<Album>(ctx.metaBucket, metaKeys.albumsPrefix('group', g.groupId));
-    for (const album of albums.sort(byNewest)) {
-      out.push({ ...album, ownerName: g.name, coverPreviewUrl: await coverPreviewUrl(ctx, album) });
-    }
+    out.push(...(await listGroupAlbums(ctx, g)));
   }
   return out;
+}
+
+/**
+ * 要求者がメンバーであるグループの正本を返す。
+ * 不正なID・存在しない・非メンバーはいずれも404（存在を推測させない, 要件2-10）。
+ */
+async function getMemberGroup(ctx: AppContext, groupId: unknown, userId: string): Promise<Group> {
+  // キーの一部になるため、空文字・長すぎる値・スラッシュを含む値は存在しないものとして扱う
+  if (
+    typeof groupId !== 'string' ||
+    groupId.length === 0 ||
+    groupId.length > 128 ||
+    groupId.includes('/')
+  ) {
+    throw notFoundOrForbidden();
+  }
+  const rec = await getGroup(ctx, groupId);
+  if (!rec || !isGroupMember(rec.value, userId)) throw notFoundOrForbidden();
+  return rec.value;
+}
+
+/** グループのアルバム一覧（正本のグループを受け取る。権限確認は呼び出し側で済ませる）。 */
+async function listGroupAlbums(ctx: AppContext, group: Group): Promise<AlbumListItem[]> {
+  const albums = await listJson<Album>(ctx.metaBucket, metaKeys.albumsPrefix('group', group.groupId));
+  return toListItems(ctx, albums, group.name);
+}
+
+/** 一覧表示用に、作成日時の新しい順へ並べ、所有主体名と表紙のプレビューURLを付ける。 */
+async function toListItems(
+  ctx: AppContext,
+  albums: Album[],
+  ownerName: string | null,
+): Promise<AlbumListItem[]> {
+  const byNewest = (a: Album, b: Album) => (a.createdAt < b.createdAt ? 1 : -1);
+  const out: AlbumListItem[] = [];
+  for (const album of [...albums].sort(byNewest)) {
+    out.push({ ...album, ownerName, coverPreviewUrl: await coverPreviewUrl(ctx, album) });
+  }
+  return out;
+}
+
+/** アルバムに所属（グループ名）を付ける。個人アルバムは null。 */
+function toDetail(album: Album, group: Group | null): AlbumDetail {
+  return { ...album, ownerName: album.ownerType === 'group' ? (group?.name ?? null) : null };
 }
 
 /** 表紙のプレビューURL。表紙メディアが同一アルバムの ready でなければ null（プレースホルダ）。 */
@@ -146,10 +200,14 @@ async function coverPreviewUrl(ctx: AppContext, album: Album): Promise<string | 
   });
 }
 
-/** アルバム詳細（閲覧権限で判定）。 */
-export async function getAlbum(ctx: AppContext, albumId: string, userId: string): Promise<Album> {
+/** アルバム詳細（閲覧権限で判定）。所属（グループ名）を同梱する。 */
+export async function getAlbum(
+  ctx: AppContext,
+  albumId: string,
+  userId: string,
+): Promise<AlbumDetail> {
   const access = await authorizeAlbumView(ctx, albumId, userId);
-  return access.album.value;
+  return toDetail(access.album.value, access.group);
 }
 
 export interface UpdateAlbumInput {
@@ -159,14 +217,14 @@ export interface UpdateAlbumInput {
   coverMediaId?: string | null;
 }
 
-/** アルバム編集（作成者のみ）。表紙は同一アルバム・ready・写真に限定。 */
+/** アルバム編集（作成者のみ）。表紙は同一アルバム・ready・写真に限定。所属（グループ名）を同梱して返す。 */
 export async function updateAlbum(
   ctx: AppContext,
   albumId: string,
   userId: string,
   input: UpdateAlbumInput,
   now: string,
-): Promise<Album> {
+): Promise<AlbumDetail> {
   const access = await authorizeAlbumEdit(ctx, albumId, userId);
   const album = access.album.value;
 
@@ -199,7 +257,7 @@ export async function updateAlbum(
     next,
     access.album.etag,
   );
-  return next;
+  return toDetail(next, access.group);
 }
 
 /** アルバム配下メディアを表紙候補として読み込む。 */

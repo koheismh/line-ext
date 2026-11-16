@@ -154,6 +154,76 @@ describe('メディア削除（非同期）', () => {
   });
 });
 
+describe('グループのアルバム一覧（GET /api/albums?groupId=）', () => {
+  function seedGroupAlbum() {
+    const group: Group = {
+      groupId: 'g1', name: '家族', adminUserIds: ['u1'], memberUserIds: ['u1'], createdBy: 'u1', ...base,
+    };
+    const album: Album = {
+      albumId: 'a1', ownerType: 'group', ownerId: 'g1', title: '旅行', description: '',
+      coverMediaId: null, coverSource: 'auto', createdBy: 'u1', ...base,
+    };
+    mem.put(metaKeys.group('g1'), group);
+    mem.put(metaKeys.album('group', 'g1', 'a1'), album);
+    mem.put(metaKeys.albumLocator('a1'), { ownerType: 'group', ownerId: 'g1' });
+  }
+  it('メンバーにはそのグループのアルバムを返し、詳細にもグループ名を付ける', async () => {
+    const cookie = seedUser('u1');
+    seedGroupAlbum();
+    const list = await route(event('GET', '/api/albums', { cookie, query: { groupId: 'g1' } }), cfg);
+    expect(list.statusCode).toBe(200);
+    expect(JSON.parse(list.body).albums.map((a: Album) => a.title)).toEqual(['旅行']);
+    const detail = await route(event('GET', '/api/albums/a1', { cookie }), cfg);
+    expect(JSON.parse(detail.body).ownerName).toBe('家族');
+  });
+  it('非メンバーは404、未ログインは401', async () => {
+    const cookie = seedUser('u2');
+    seedGroupAlbum();
+    const res = await route(event('GET', '/api/albums', { cookie, query: { groupId: 'g1' } }), cfg);
+    expect(res.statusCode).toBe(404);
+    expect(res.body).not.toContain('旅行');
+    const anon = await route(event('GET', '/api/albums', { query: { groupId: 'g1' } }), cfg);
+    expect(anon.statusCode).toBe(401);
+  });
+});
+describe('グループ名の変更・削除（PATCH/DELETE /api/groups/{groupId}）', () => {
+  function seedGroup() {
+    const group: Group = {
+      groupId: 'g1', name: 'うち', adminUserIds: ['u1'], memberUserIds: ['u1'], createdBy: 'u1', ...base,
+    };
+    mem.put(metaKeys.group('g1'), group);
+    mem.put(metaKeys.userGroup('u1', 'g1'), { groupId: 'g1' });
+  }
+  it('変更系なので Origin が無ければ403（CSRF）、未ログインは401。どちらも変わらない', async () => {
+    const cookie = seedUser('u1');
+    seedGroup();
+    const noOrigin = await route(event('PATCH', '/api/groups/g1', { cookie, body: { name: '新' } }), cfg);
+    expect(noOrigin.statusCode).toBe(403);
+    const noOriginDelete = await route(event('DELETE', '/api/groups/g1', { cookie }), cfg);
+    expect(noOriginDelete.statusCode).toBe(403);
+    const anon = await route(event('DELETE', '/api/groups/g1', { origin: ORIGIN }), cfg);
+    expect(anon.statusCode).toBe(401);
+    expect(mem.get(metaKeys.group('g1'))).toMatchObject({ name: 'うち' });
+    expect((mem.get(metaKeys.group('g1')) as Group).deletedAt).toBeUndefined();
+  });
+  it('管理者は名前を変えて削除でき、削除後は404', async () => {
+    const cookie = seedUser('u1');
+    seedGroup();
+    const renamed = await route(
+      event('PATCH', '/api/groups/g1', { cookie, origin: ORIGIN, body: { name: '山田家' } }),
+      cfg,
+    );
+    expect(renamed.statusCode).toBe(200);
+    expect(JSON.parse(renamed.body).name).toBe('山田家');
+    const list = await route(event('GET', '/api/groups', { cookie }), cfg);
+    expect(JSON.parse(list.body).groups.map((g: { name: string }) => g.name)).toEqual(['山田家']);
+
+    const deleted = await route(event('DELETE', '/api/groups/g1', { cookie, origin: ORIGIN }), cfg);
+    expect(deleted.statusCode).toBe(204);
+    const after = await route(event('GET', '/api/groups/g1', { cookie }), cfg);
+    expect(after.statusCode).toBe(404);
+  });
+});
 describe('errorToResponse', () => {
   it('ETag 競合は409（リトライ可能）として返す', () => {
     const res = errorToResponse(new ConflictError());

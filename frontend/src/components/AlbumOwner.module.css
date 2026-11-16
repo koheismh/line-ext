@@ -1,0 +1,26 @@
+/* アルバムの所属。グループのアルバムはリンク（押せる見た目）、個人はラベルとして出す */
+.owner {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background-color: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-bold);
+  text-decoration: none;
+  white-space: normal;
+}
+
+a.owner:hover {
+  background-color: var(--color-secondary-soft);
+  text-decoration: none;
+}
+
+.note {
+  color: var(--color-text-muted);
+  font-weight: var(--font-weight-normal);
+}

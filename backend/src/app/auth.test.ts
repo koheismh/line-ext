@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { s3 } from '../repo/s3Client.js';
 import { installMemoryS3, type MemoryS3 } from '../testing/memoryS3.js';
 import { loginOrRegisterFromLine } from './auth.js';
-import { createGroup, issueInvite, revokeInvite } from './groups.js';
+import { createGroup, deleteGroup, issueInvite, revokeInvite } from './groups.js';
 import { ORPHAN_CLAIM_GRACE_MS } from './invites.js';
 import { metaKeys } from '../repo/keys.js';
 import type { Invite, User } from '@photo-album/shared';
@@ -93,5 +93,15 @@ describe('loginOrRegisterFromLine（要件1-13）', () => {
     const after = new Date(Date.parse(NOW) + ORPHAN_CLAIM_GRACE_MS + 1000).toISOString();
     const r = await loginOrRegisterFromLine(ctx, 'line-sub-2', 'b', after, invite.token);
     expect(r).toEqual({ ok: false, reason: 'invite_used' });
+  });
+  it('削除されたグループの招待では新規登録できず（invite_revoked）、招待も使用済みにならない', async () => {
+    const g = await createGroup(ctx, 'admin', 'fam', '2026-01-01T00:00:00Z');
+    const invite = await issueInvite(ctx, g.groupId, 'admin', Date.parse(NOW));
+    await deleteGroup(ctx, g.groupId, 'admin', NOW);
+
+    const r = await loginOrRegisterFromLine(ctx, 'line-sub-1', '太郎', NOW, invite.token);
+    expect(r).toEqual({ ok: false, reason: 'invite_revoked' });
+    expect(mem.store.has(metaKeys.lineIdentity('line-sub-1'))).toBe(false);
+    expect((mem.get(metaKeys.inviteByHash(invite.inviteId)) as Invite).usedBy).toBeUndefined();
   });
 });

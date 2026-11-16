@@ -55,17 +55,19 @@ GET    /api/me                                  # userId・表示名。セッシ
 GET    /api/auth/line/start                     # 戻り先(同一オリジン相対)を保持
 GET    /api/auth/line/callback
 POST   /api/auth/logout                         # sessionVersion をインクリメントし全Cookie無効化（Origin検証あり）
-GET    /api/groups                              # 所属グループ一覧（user-groups → 正本照合）
+GET    /api/groups                              # 所属グループ一覧（user-groups → 正本照合）。メンバー数を同梱
 POST   /api/groups                              # name 必須
 GET    /api/groups/{groupId}                    # グループ詳細（メンバー表示名一覧を含む）
+PATCH  /api/groups/{groupId}                    # グループ名の変更（管理者のみ）
+DELETE /api/groups/{groupId}                    # グループの削除（管理者のみ・アルバムが無いときだけ。記録は残し deletedAt を付ける）。204
 POST   /api/groups/{groupId}/invites            # 管理者のみ
 GET    /api/groups/{groupId}/invites            # 有効な招待の一覧（管理者のみ・トークン平文は返さない）
 POST   /api/invites/{inviteId}/revoke           # 招待失効（管理者のみ）。グループは招待の正本から解決
 POST   /api/invites/accept                      # 明示操作で参加
-GET    /api/albums                              # 権限のある所有主体のみ。所有主体はクエリ省略可(locatorで解決)
-POST   /api/albums
-GET    /api/albums/{albumId}                    # album-locator で所有主体を解決
-PATCH  /api/albums/{albumId}
+GET    /api/albums                              # 権限のある所有主体のみ。?groupId= でそのグループのアルバムだけ（非メンバーは404）
+POST   /api/albums                              # 所有主体は user（本人）か group（メンバー）のどちらか必須
+GET    /api/albums/{albumId}                    # album-locator で所有主体を解決。所属のグループ名(ownerName)を同梱
+PATCH  /api/albums/{albumId}                    # 応答は GET と同じ形（ownerName 付き）
 GET    /api/albums/{albumId}/media              # ready のみ・プレビューURLをまとめて返す・ページング
 POST   /api/albums/{albumId}/media/uploads          # 単一PUT署名URL（Content-Length/Type を署名）+ mediaId
 POST   /api/albums/{albumId}/media/uploads/multipart # マルチパート開始 → uploadId + パート署名URL群

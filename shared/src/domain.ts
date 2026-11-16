@@ -57,6 +57,14 @@ export interface Group {
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+  /**
+   * 削除時刻（墓標）。削除済みのグループは存在しないものとして扱う。
+   * メタデータはバージョニングしていないため、記録は消さずに残す（復元できるように）。
+   * この項目が無い・null は未削除。
+   */
+  deletedAt?: string | null;
+  /** 削除した管理者の内部ID。 */
+  deletedBy?: string | null;
 }
 
 /**
