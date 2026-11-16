@@ -111,7 +111,6 @@ Layer が無い間にアップロードしたメディアは、投稿者がビ�
 ## 未検証（実機確認が必要）
 
 - iOS Safari / LINE内ブラウザでのファイル選択時の MIME・コーデック（`accept` に対応MIMEを列挙したときの HEIC→JPEG 変換を含む）
-- 実S3への署名付きPUT・パートアップロード（チェックサム設定 `WHEN_REQUIRED` と Content-Type 署名の組み合わせ）
 - 一時認証情報で署名したURLの実効期限、500MBオブジェクトの CopyObject 所要時間（削除・失効・再処理で使用）
 - FFmpeg（ffprobe）による動画のコーデック判定（写真のプレビュー生成と `nodejs24.x` での実行は本番で確認済み）
 - 実ブラウザでの IndexedDB 保留・マルチパート並列アップロード・動画再生・Wake Lock

@@ -261,7 +261,7 @@
   - [x] 23.6 テスト: 整形ヘルパー（`lib/format.ts`）・Modal・Button・LoginPage。モックAPI＋ヘッドレス Edge で主要画面（スマホ幅・PC幅）と、トークンの差し替えだけで見た目が変わることを目視確認
   - [x] 23.7 フロントのデプロイ（`vite build` → S3 へアップロード（index.html は最後）→ CloudFront invalidation `/*`）。本番URLで index.html・JS・CSS・favicon が新しい版で返ること、`/api/health` 200・`/api/me` 401、ログイン画面の表示を確認
     - _切り戻し用に旧版の JS（`assets/index-aX5Ljnbc.js`）をバケットに残している。戻すときは旧版の index.html（`/assets/index-aX5Ljnbc.js` を読み込むもの）を上げて invalidation する。旧ファイルは次回の `aws s3 sync --delete` で消える_
-  - [ ] 23.8 iPhone 実機での確認（見た目・写真/動画のモーダル・回線ガードの確認モーダル）。タスク22.8の実機確認と同時に行う。あわせて、スマホで撮った写真を再アップロードしてプレビューが出ることを確認する（タスク24の障害の確認）
+  - [ ] 23.8 iPhone 実機での確認（見た目・写真/動画のモーダル・回線ガードの確認モーダル）。タスク22.8の実機確認と同時に行う（写真の再アップロードとプレビューはタスク24.5で確認済み）
     - _確認後、切り戻し用のバックアップ（作業PCの `%TEMP%\pa-front-backup` と、フロントのバケットに残した旧版 JS）を削除する_
   - _注: Android・Windows には丸ゴシックがないため標準のゴシック体で表示される。揃えたい場合は Web フォントの自己ホストを検討（初回の通信量が数百KB増える）_
 
@@ -272,7 +272,8 @@
   - [x] 24.2 確認: スマホ写真相当の JPEG（4032x3024、EXIF Orientation=6）を、どのアルバムにも属さないテスト用ID（`zzverify-*`）で本番と同じ経路（S3 → EventBridge → Lambda）に流し、約7秒で ready・プレビュー 384x512（EXIF の向きを反映）・プレビューに EXIF が残らないことを確認。テスト用のオブジェクトは削除済み
   - [x] 24.3 再発防止: 公開オリジンと FFmpeg Layer を `infra/cdk.json` の context（`photoAlbum:appOrigin` / `photoAlbum:ffmpegLayer`）で Git 管理（環境変数は一時的な上書き用）。FFmpeg Layer の指定が無いと synth をエラーにする（Layer なしは `none` で明示）。ARN はアカウントIDをリポジトリに書かず `AWS::AccountId` から組み立てる。環境変数なしの `cdk diff --all` が4スタックとも差分なし（＝本番と一致）を確認
   - [x] 24.4 テスト: `infra/src/config.test.ts`（設定の優先順位、指定漏れ・不正な値はエラー、cdk.json に本番の値があること）、ProcessingStack（サムネイル生成 Lambda にだけ Layer が付く、ARN の組み立て）
-  - 失敗した写真3枚は利用者が削除済み（ごみ箱。30日で自動削除）。必要ならアップロードし直す
+  - 失敗した写真3枚は利用者が削除済み（原本はごみ箱へ退避済み、30日で自動削除）
+  - [x] 24.5 利用者による確認（2026-11-16）: スマホで撮った写真5枚を再アップロードし、すべて ready（サムネイル生成 0.7〜1.3秒、メモリ最大 182MB / 2048MB）。申告サイズ・実サイズ・S3 のサイズと Content-Type が一致（署名付きPUT と S3 クライアントのチェックサム設定 `WHEN_REQUIRED` を本番で確認）。プレビューに EXIF なし、表紙の自動設定も動作。再デプロイ後の全 Lambda のログに警告・エラーなし
 
 ## 引き継ぎメモ（別AI向け）
 
