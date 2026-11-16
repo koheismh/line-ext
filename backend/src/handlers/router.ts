@@ -11,7 +11,7 @@ import { authenticate, requireUser, type RequestMeta } from './authMiddleware.js
 import { handleLineStart, handleLineCallback, handleLogout } from './authFlow.js';
 import { handle, ok, noContent, type HttpResponse } from './http.js';
 import { loadRuntimeConfig, type RuntimeConfig } from './runtimeConfig.js';
-import { enqueueDeletion } from './jobs.js';
+import { enqueueDeletion, enqueueDeletions } from './jobs.js';
 import { buildSessionCookie } from '../auth/cookie.js';
 import * as groups from '../app/groups.js';
 import * as albums from '../app/albums.js';
@@ -182,6 +182,14 @@ export async function route(
       const userId = await auth();
       const body = parseBody<albums.UpdateAlbumInput>(event);
       return ok(await albums.updateAlbum(app, albumOne[1]!, userId, body, nowIso()));
+    }
+    // アルバムの削除（作成者・グループ管理者・個人アルバムの所有者）。アルバムは即座に見えなくなり、
+    // 中の写真・動画のごみ箱退避は SQS 経由のワーカーで非同期に行う
+    if (method === 'DELETE' && albumOne) {
+      const userId = await auth();
+      const jobs = await deletion.deleteAlbum(app, albumOne[1]!, userId, new Date());
+      await enqueueDeletions(cfg.deletionQueueUrl, jobs);
+      return noContent();
     }
 
     // --- album media ---

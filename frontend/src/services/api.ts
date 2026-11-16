@@ -122,6 +122,9 @@ export const api = {
       request<AlbumDetail>('GET', `/api/albums/${encodeURIComponent(albumId)}`),
     update: (albumId: string, input: { title?: string; description?: string; coverMediaId?: string | null }) =>
       request<AlbumDetail>('PATCH', `/api/albums/${encodeURIComponent(albumId)}`, input),
+    /** アルバムの削除（作成者・グループ管理者・個人アルバムの所有者）。中の写真・動画はごみ箱へ移る。 */
+    remove: (albumId: string) =>
+      request<void>('DELETE', `/api/albums/${encodeURIComponent(albumId)}`),
     media: (albumId: string, pageToken?: string) =>
       request<MediaPage>(
         'GET',

@@ -246,6 +246,23 @@ describe('renameGroup（要件2-14）', () => {
 });
 
 describe('deleteGroup（要件2-15）', () => {
+  it('アルバムを先に削除すれば（削除済みの印があれば）グループを削除できる', async () => {
+    const g = await createGroup(ctx, 'admin', 'うち', 'now');
+    mem.put(metaKeys.album('group', g.groupId, 'a1'), { albumId: 'a1' });
+    await expect(deleteGroup(ctx, g.groupId, 'admin', 'now')).rejects.toSatisfy(
+      isAppError(409, 'group_not_empty'),
+    );
+    // アルバムを削除（墓標を付与）しても、もう1件残っていればまだ削除できない
+    mem.put(metaKeys.album('group', g.groupId, 'a1'), { albumId: 'a1', deletedAt: '2026-01-02T00:00:00Z' });
+    mem.put(metaKeys.album('group', g.groupId, 'a2'), { albumId: 'a2' });
+    await expect(deleteGroup(ctx, g.groupId, 'admin', 'now')).rejects.toSatisfy(
+      isAppError(409, 'group_not_empty'),
+    );
+    mem.put(metaKeys.album('group', g.groupId, 'a2'), { albumId: 'a2', deletedAt: '2026-01-02T00:00:00Z' });
+    await deleteGroup(ctx, g.groupId, 'admin', '2026-01-03T00:00:00Z');
+    expect((mem.get(metaKeys.group(g.groupId)) as Group).deletedAt).toBe('2026-01-03T00:00:00Z');
+  });
+
   it('アルバムのないグループを管理者が削除すると、記録を残したまま全員から見えなくなる', async () => {
     const g = await createGroup(ctx, 'admin', 'うち', '2026-01-01T00:00:00Z');
     addMember(g.groupId, 'u2');

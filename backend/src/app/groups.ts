@@ -12,6 +12,7 @@ import {
   GROUP_NAME_MAX_LENGTH,
   INVITE_TTL_MS,
   randomId,
+  type Album,
   type Group,
   type GroupSummary,
   type Invite,
@@ -25,7 +26,6 @@ import {
   putJsonIfAbsent,
   putJson,
   listJson,
-  listKeys,
   metaKeys,
   sha256Hex,
   ConflictError,
@@ -164,7 +164,7 @@ export async function renameGroup(
 
 /**
  * グループを削除する（管理者のみ）。要件2-15。
- * - アルバムが1件でもあるグループは削除しない（409 group_not_empty）。アルバム削除は MVP の対象外のため
+ * - 削除済みでないアルバムが1件でもあるグループは削除しない（409 group_not_empty）。先にアルバムを削除してもらう
  * - 記録は消さず deletedAt / deletedBy を付ける（メタデータはバージョニングしておらず、消すと戻せないため）。
  *   削除済みのグループは getGroup / isGroupMember で存在しないものとして扱われ、招待も使えなくなる
  * - 二重実行は冪等: 削除済みでも、削除前の管理者には成功を返す。それ以外には存在を隠す（404）
@@ -192,7 +192,7 @@ export async function deleteGroup(
       throw new AppError(
         409,
         'group_not_empty',
-        'アルバムがあるグループは削除できません。グループを削除できるのは、アルバムが1つもないときだけです。',
+        'アルバムがあるグループは削除できません。先にアルバムをすべて削除してください。',
       );
     }
     const updated: Group = { ...group, deletedAt: now, deletedBy: userId, updatedAt: now };
@@ -207,12 +207,10 @@ export async function deleteGroup(
   throw new ConflictError();
 }
 
-/** グループにアルバムが1件でもあるか（キーの有無だけを見る）。 */
+/** グループに（削除済みでない）アルバムが1件でもあるか。削除済みのアルバムは数えない。 */
 async function hasAlbums(ctx: AppContext, groupId: string): Promise<boolean> {
-  const page = await listKeys(ctx.metaBucket, metaKeys.albumsPrefix('group', groupId), {
-    maxKeys: 1,
-  });
-  return page.keys.length > 0;
+  const albums = await listJson<Album>(ctx.metaBucket, metaKeys.albumsPrefix('group', groupId));
+  return albums.some((a) => !a.deletedAt);
 }
 
 export interface IssuedInvite {

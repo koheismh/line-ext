@@ -30,7 +30,7 @@ import {
 } from '../repo/index.js';
 import { createAlbumLocator, resolveAlbumLocator } from '../repo/locator.js';
 import { isValidManualCover, autoCoverOnReady, selectCover, type CoverCandidate } from '../domain/cover.js';
-import { canCreateAlbum, isGroupMember } from '../domain/authz.js';
+import { canCreateAlbum, canDeleteAlbum, isGroupMember } from '../domain/authz.js';
 import { validateText } from '../domain/validation.js';
 import type { AppContext } from './context.js';
 import { AppError, notFoundOrForbidden } from './errors.js';
@@ -129,7 +129,9 @@ export async function listAlbums(
     return listGroupAlbums(ctx, group);
   }
 
-  const personal = await listJson<Album>(ctx.metaBucket, metaKeys.albumsPrefix('user', userId));
+  const personal = (
+    await listJson<Album>(ctx.metaBucket, metaKeys.albumsPrefix('user', userId))
+  ).filter(isNotDeleted);
 
   // 所属グループ（user-groups インデックス → 正本照合）
   const groups = (await loadMemberGroups(ctx, userId)).sort((a, b) =>
@@ -162,10 +164,15 @@ async function getMemberGroup(ctx: AppContext, groupId: unknown, userId: string)
   return rec.value;
 }
 
-/** グループのアルバム一覧（正本のグループを受け取る。権限確認は呼び出し側で済ませる）。 */
+/** グループのアルバム一覧（正本のグループを受け取る。権限確認は呼び出し側で済ませる）。削除済みは除く。 */
 async function listGroupAlbums(ctx: AppContext, group: Group): Promise<AlbumListItem[]> {
   const albums = await listJson<Album>(ctx.metaBucket, metaKeys.albumsPrefix('group', group.groupId));
-  return toListItems(ctx, albums, group.name);
+  return toListItems(ctx, albums.filter(isNotDeleted), group.name);
+}
+
+/** 削除済み（墓標あり）でないアルバムか。一覧から削除済みを外すために使う。 */
+function isNotDeleted(album: Album): boolean {
+  return !album.deletedAt;
 }
 
 /** 一覧表示用に、作成日時の新しい順へ並べ、所有主体名と表紙のプレビューURLを付ける。 */
@@ -182,9 +189,13 @@ async function toListItems(
   return out;
 }
 
-/** アルバムに所属（グループ名）を付ける。個人アルバムは null。 */
-function toDetail(album: Album, group: Group | null): AlbumDetail {
-  return { ...album, ownerName: album.ownerType === 'group' ? (group?.name ?? null) : null };
+/** アルバムに所属（グループ名）と、要求者が削除できるか（表示制御用）を付ける。個人アルバムの所属は null。 */
+function toDetail(album: Album, group: Group | null, userId: string): AlbumDetail {
+  return {
+    ...album,
+    ownerName: album.ownerType === 'group' ? (group?.name ?? null) : null,
+    canDelete: canDeleteAlbum(album, userId, group),
+  };
 }
 
 /** 表紙のプレビューURL。表紙メディアが同一アルバムの ready でなければ null（プレースホルダ）。 */
@@ -207,7 +218,7 @@ export async function getAlbum(
   userId: string,
 ): Promise<AlbumDetail> {
   const access = await authorizeAlbumView(ctx, albumId, userId);
-  return toDetail(access.album.value, access.group);
+  return toDetail(access.album.value, access.group, userId);
 }
 
 export interface UpdateAlbumInput {
@@ -257,7 +268,7 @@ export async function updateAlbum(
     next,
     access.album.etag,
   );
-  return toDetail(next, access.group);
+  return toDetail(next, access.group, userId);
 }
 
 /** アルバム配下メディアを表紙候補として読み込む。 */

@@ -8,6 +8,7 @@ import type { Album, Group, Media } from '@photo-album/shared';
 import {
   canViewAlbum,
   canEditAlbum,
+  canDeleteAlbum,
   canUploadMedia,
   canDeleteMedia,
   canPostComment,
@@ -59,6 +60,22 @@ export async function authorizeAlbumEdit(
   const access = await authorizeAlbumView(ctx, albumId, userId);
   if (!canEditAlbum(access.album.value, userId)) {
     throw forbidden('アルバムを編集できるのは作成者のみです。');
+  }
+  return access;
+}
+
+/**
+ * アルバム削除の権限を解決する。
+ * 閲覧不可・削除済みは404、閲覧可だが作成者でも（グループの）管理者でもなければ403。
+ */
+export async function authorizeAlbumDelete(
+  ctx: AppContext,
+  albumId: string,
+  userId: string,
+): Promise<AlbumAccess> {
+  const access = await authorizeAlbumView(ctx, albumId, userId);
+  if (!canDeleteAlbum(access.album.value, userId, access.group)) {
+    throw forbidden('アルバムを削除できるのは、作成者またはグループの管理者のみです。');
   }
   return access;
 }

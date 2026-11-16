@@ -1,5 +1,7 @@
-// メディア削除とごみ箱のユースケース（app層）。requirements 要件7 に準拠。
+// メディア削除・アルバム削除とごみ箱のユースケース（app層）。requirements 要件3-15・要件7 に準拠。
 //  - startDelete: 認可→deleting化→deletedDate/退避先キー確定→削除ジョブを返す（SQS投入はhandler）
+//  - deleteAlbum: アルバムに墓標を付け、中のメディアを deleting にして削除ジョブを返す
+//  - reapMediaOfDeletedAlbum: 削除済みアルバムに残ったメディアを定期掃除で片付ける
 //  - processDeletionJob: コピー→サイズ検証→（全件検証後に）元削除→trashed（冪等・途中失敗から再試行）
 //  - expireStaleMedia: 放置メディアの未完了マルチパート中断・残オブジェクトのごみ箱退避→expired
 //  - 不変条件: コピー検証前に元を削除しない。deleting以降はURL発行/一覧から除外。
@@ -12,8 +14,10 @@ import {
   type MediaTrashInfo,
 } from '@photo-album/shared';
 import {
+  getJson,
   getJsonOrThrow,
   putJsonIfMatch,
+  listJson,
   metaKeys,
   mediaKeys,
   copyObject,
@@ -21,11 +25,13 @@ import {
   deleteObject,
   abortMultipartUpload,
   ConflictError,
+  type JsonRecord,
 } from '../repo/index.js';
 import { canStartDelete, canTransition } from '../domain/mediaState.js';
 import type { AppContext } from './context.js';
-import { AppError } from './errors.js';
-import { authorizeMediaDelete } from './authorize.js';
+import { AppError, notFoundOrForbidden } from './errors.js';
+import { authorizeAlbumDelete, authorizeMediaDelete } from './authorize.js';
+import { getAlbumIncludingDeleted } from './entities.js';
 import { recalcCover } from './albums.js';
 
 const MAX_RETRY = 5;
@@ -81,28 +87,167 @@ export async function startDelete(
     throw new AppError(409, 'not_deletable', 'このメディアは削除できない状態です。');
   }
 
+  await writeDeleting(ctx, access.media, now);
+
+  await recalcCoverIfNeeded(ctx, access.album, mediaId);
+  return job;
+}
+
+/**
+ * メディアを deleting にして、退避先キーを確定・保存する（認可は呼び出し側で済ませる）。
+ * 二重クリック等で同時に削除開始されて競合した場合は、読み直して deleting 以降なら冪等に成功する。
+ */
+async function writeDeleting(ctx: AppContext, rec: JsonRecord<Media>, now: Date): Promise<void> {
+  const media = rec.value;
   const updated: Media = {
     ...media,
     status: 'deleting',
     updatedAt: now.toISOString(),
     trash: buildTrashInfo(media, now),
   };
+  const key = metaKeys.media(media.albumId, media.mediaId);
   try {
-    await putJsonIfMatch(
-      ctx.metaBucket,
-      metaKeys.media(media.albumId, mediaId),
-      updated,
-      access.media.etag,
-    );
+    await putJsonIfMatch(ctx.metaBucket, key, updated, rec.etag);
   } catch (err) {
-    // 二重クリック等で同時に削除開始した場合: 読み直して deleting 以降なら冪等に成功
     if (!(err instanceof ConflictError)) throw err;
-    const again = await getJsonOrThrow<Media>(ctx.metaBucket, metaKeys.media(media.albumId, mediaId));
+    const again = await getJsonOrThrow<Media>(ctx.metaBucket, key);
     if (again.value.status !== 'deleting' && again.value.status !== 'trashed') throw err;
   }
+}
 
-  await recalcCoverIfNeeded(ctx, access.album, mediaId);
-  return job;
+/**
+ * 認可済みの文脈で、メディアの削除を始める（アルバム削除と定期掃除が使う）。冪等。
+ * 削除ジョブを積むべきなら返し、積む必要がなければ null。
+ * - ready / error → deleting にして返す
+ * - すでに deleting → 返す（ワーカーは冪等。取りこぼしの再投入にも使える）
+ * - trashed / expired → null（済んでいる）
+ * - uploading / validating → null（途中の処理を壊さない。放置されたら24時間後の失効で片付く）
+ */
+export async function startDeletingMedia(
+  ctx: AppContext,
+  albumId: string,
+  mediaId: string,
+  now: Date,
+): Promise<DeletionJob | null> {
+  const rec = await getJson<Media>(ctx.metaBucket, metaKeys.media(albumId, mediaId));
+  if (!rec) return null;
+  const status = rec.value.status;
+  if (status === 'deleting') return { mediaId, albumId };
+  if (!canStartDelete(status)) return null;
+  await writeDeleting(ctx, rec, now);
+  return { mediaId, albumId };
+}
+
+/** アルバム削除で、メディアを deleting にする処理に使える時間（API Gateway の30秒に収める）。 */
+const ALBUM_MEDIA_BUDGET_MS = 12_000;
+/** 同時に処理するメディア数。 */
+const ALBUM_MEDIA_CONCURRENCY = 8;
+
+/**
+ * アルバムを削除する（作成者またはグループ管理者。個人アルバムは所有者）。要件3-15。
+ * 1. アルバムに削除済みの印（deletedAt）を付ける。この時点で全員の一覧・閲覧・アップロード・コメントから外れる
+ * 2. 中のメディア（ready / error）を deleting にして、削除ジョブを返す（SQS投入は handler）
+ *    → あとは既存の削除ワーカーが、メディア1件ごとに「コピー検証 → 元を削除 → trashed」を行う
+ * 途中で止まっても、定期掃除が削除済みアルバムに残ったメディアを見つけて続きを行う（reapMediaOfDeletedAlbum）。
+ * 二重実行は冪等: 削除済みなら、削除した本人にだけ成功を返す（残りのメディアの処理も続ける）。それ以外は404。
+ */
+export async function deleteAlbum(
+  ctx: AppContext,
+  albumId: string,
+  userId: string,
+  now: Date,
+): Promise<DeletionJob[]> {
+  for (let attempt = 0; ; attempt++) {
+    const existing = await getAlbumIncludingDeleted(ctx, albumId);
+    if (!existing) throw notFoundOrForbidden();
+    if (existing.value.deletedAt) {
+      if (existing.value.deletedBy !== userId) throw notFoundOrForbidden();
+      break;
+    }
+    const access = await authorizeAlbumDelete(ctx, albumId, userId);
+    const album = access.album.value;
+    const updated: Album = {
+      ...album,
+      deletedAt: now.toISOString(),
+      deletedBy: userId,
+      updatedAt: now.toISOString(),
+    };
+    try {
+      await putJsonIfMatch(
+        ctx.metaBucket,
+        metaKeys.album(album.ownerType, album.ownerId, albumId),
+        updated,
+        access.album.etag,
+      );
+      break;
+    } catch (err) {
+      // 表紙の自動設定などのシステム更新と競合したら、読み直してやり直す
+      if (err instanceof ConflictError && attempt < MAX_RETRY - 1) continue;
+      throw err;
+    }
+  }
+  return startDeletingAlbumMedia(ctx, albumId, now);
+}
+
+/** 削除済みアルバムの中のメディアを deleting にして、積むべき削除ジョブを集める。 */
+async function startDeletingAlbumMedia(
+  ctx: AppContext,
+  albumId: string,
+  now: Date,
+): Promise<DeletionJob[]> {
+  const medias = await listJson<Media>(ctx.metaBucket, metaKeys.mediaPrefix(albumId));
+  const targets = medias.filter(
+    (m) => m.status === 'ready' || m.status === 'error' || m.status === 'deleting',
+  );
+  const deadline = Date.now() + ALBUM_MEDIA_BUDGET_MS;
+  const jobs: DeletionJob[] = [];
+  for (let i = 0; i < targets.length; i += ALBUM_MEDIA_CONCURRENCY) {
+    if (Date.now() > deadline) {
+      console.warn('[deletion] アルバム内のメディアの処理が時間内に終わらなかったため、残りは定期掃除に任せます', {
+        albumId,
+        remaining: targets.length - i,
+      });
+      break;
+    }
+    const batch = targets.slice(i, i + ALBUM_MEDIA_CONCURRENCY);
+    const results = await Promise.all(
+      batch.map((m) =>
+        startDeletingMedia(ctx, albumId, m.mediaId, now).catch((err: Error) => {
+          // 1件の失敗で他を止めない。残りは定期掃除が続ける
+          console.warn('[deletion] メディアの削除開始に失敗しました（定期掃除が続けます）', {
+            albumId,
+            mediaId: m.mediaId,
+            message: err.message,
+          });
+          return null;
+        }),
+      ),
+    );
+    for (const job of results) if (job) jobs.push(job);
+  }
+  return jobs;
+}
+
+/**
+ * 削除済みアルバムに残ったメディアを片付ける（定期掃除から呼ぶ）。積むべき削除ジョブを返す。
+ * アルバム削除の途中失敗や、削除と同時に処理が終わって ready になったメディアを拾う。
+ * albumDeleted はこの実行の間だけ使うアルバム単位のキャッシュ（メディアごとにアルバムを読み直さない）。
+ */
+export async function reapMediaOfDeletedAlbum(
+  ctx: AppContext,
+  media: Pick<Media, 'albumId' | 'mediaId' | 'status'>,
+  now: Date,
+  albumDeleted: Map<string, boolean>,
+): Promise<DeletionJob | null> {
+  if (media.status !== 'ready' && media.status !== 'error') return null;
+  let deleted = albumDeleted.get(media.albumId);
+  if (deleted === undefined) {
+    const album = await getAlbumIncludingDeleted(ctx, media.albumId);
+    deleted = !!album?.value.deletedAt;
+    albumDeleted.set(media.albumId, deleted);
+  }
+  if (!deleted) return null;
+  return startDeletingMedia(ctx, media.albumId, media.mediaId, now);
 }
 
 /**

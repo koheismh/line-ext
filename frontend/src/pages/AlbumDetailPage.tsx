@@ -2,10 +2,11 @@
 // アルバム編集（作成者のみ）、ビューア、アルバムへのコメント。
 // グループのアルバムは「グループの中のアルバム」として、戻り先をそのグループの画面にする。
 import { useCallback, useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import {
   ALBUM_DESCRIPTION_MAX_LENGTH,
   ALBUM_TITLE_MAX_LENGTH,
+  TRASH_RETENTION_DAYS,
   type AlbumDetail,
   type MediaListItem,
 } from '@photo-album/shared';
@@ -33,6 +34,8 @@ import styles from './AlbumDetailPage.module.css';
 export function AlbumDetailPage() {
   const { albumId = '' } = useParams();
   const { userId } = useSession();
+  const navigate = useNavigate();
+  const [deleting, setDeleting] = useState(false);
   const [album, setAlbum] = useState<AlbumDetail | null>(null);
   const [items, setItems] = useState<MediaListItem[]>([]);
   const [pageCount, setPageCount] = useState(1);
@@ -121,6 +124,26 @@ export function AlbumDetailPage() {
       ? { to: `/groups/${encodeURIComponent(album.ownerId)}`, label: album.ownerName ?? 'グループ' }
       : { to: '/albums', label: 'アルバム一覧' };
 
+  /** アルバムを削除する（確認のうえ。権限の判定はサーバが行う）。成功したら戻り先の画面へ移る。 */
+  async function removeAlbum() {
+    if (!album) return;
+    if (
+      !confirm(
+        `アルバム「${album.title}」を削除しますか？ このアルバムの写真・動画・コメントはすべて見られなくなり、写真・動画は約${TRASH_RETENTION_DAYS}日後に完全に削除されます。元に戻す画面はありません。`,
+      )
+    ) {
+      return;
+    }
+    setDeleting(true);
+    try {
+      await api.albums.remove(albumId);
+      navigate(back.to, { replace: true });
+    } catch (err) {
+      setError(errorMessage(err));
+      setDeleting(false);
+    }
+  }
+
   return (
     <Page
       title={album?.title ?? 'アルバム'}
@@ -207,6 +230,22 @@ export function AlbumDetailPage() {
       )}
 
       {album && <CommentPanel targetType="album" targetId={albumId} />}
+
+      {album?.canDelete && (
+        <Card as="section" aria-labelledby="album-delete">
+          <CardTitle id="album-delete" emoji="🗑">
+            アルバムの削除
+          </CardTitle>
+          <p className={styles.muted}>
+            削除すると、このアルバムの写真・動画・コメントはすべて見られなくなります。写真・動画は約
+            {TRASH_RETENTION_DAYS}日後に完全に削除されます。
+            {album.ownerType === 'group' && ' グループのメンバー全員から見えなくなります。'}
+          </p>
+          <Button variant="danger" icon="🗑" disabled={deleting} onClick={() => void removeAlbum()}>
+            アルバムを削除
+          </Button>
+        </Card>
+      )}
     </Page>
   );
 }

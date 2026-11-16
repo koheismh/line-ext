@@ -186,6 +186,70 @@ describe('グループのアルバム一覧（GET /api/albums?groupId=）', () =
     expect(anon.statusCode).toBe(401);
   });
 });
+describe('アルバムの削除（DELETE /api/albums/{albumId}）', () => {
+  function seedAlbumWithMedia() {
+    const group: Group = {
+      groupId: 'g1', name: 'f', adminUserIds: ['u1'], memberUserIds: ['u1', 'u2'], createdBy: 'u1', ...base,
+    };
+    const album: Album = {
+      albumId: 'a1', ownerType: 'group', ownerId: 'g1', title: 't', description: '',
+      coverMediaId: null, coverSource: 'auto', createdBy: 'u1', ...base,
+    };
+    const media = (mediaId: string): Media => ({
+      mediaId, albumId: 'a1', kind: 'photo', status: 'ready', errorReason: null, originalExt: 'jpg',
+      displayFileName: 'a.jpg', declaredByteSize: 1, declaredMimeType: 'image/jpeg', byteSize: 1,
+      mimeType: 'image/jpeg', videoCodec: null, capturedAt: null, fileLastModified: null, uploadId: null,
+      createdBy: 'u1', ...base,
+    });
+    mem.put(metaKeys.group('g1'), group);
+    mem.put(metaKeys.album('group', 'g1', 'a1'), album);
+    mem.put(metaKeys.albumLocator('a1'), { ownerType: 'group', ownerId: 'g1' });
+    for (const id of ['m1', 'm2']) {
+      mem.put(metaKeys.media('a1', id), media(id));
+      mem.put(metaKeys.mediaLocator(id), { albumId: 'a1', ownerType: 'group', ownerId: 'g1' });
+    }
+  }
+  it('作成者は削除でき（204）、アルバムは即座に見えなくなり、中のメディアごとに削除ジョブを SQS に投入する', async () => {
+    const cookie = seedUser('u1');
+    seedAlbumWithMedia();
+    const res = await route(event('DELETE', '/api/albums/a1', { cookie, origin: ORIGIN }), cfg);
+    expect(res.statusCode).toBe(204);
+    expect((mem.get(metaKeys.album('group', 'g1', 'a1')) as Album).deletedAt).toBeTruthy();
+    expect((await route(event('GET', '/api/albums/a1', { cookie }), cfg)).statusCode).toBe(404);
+    const bodies = sqsMock
+      .commandCalls(SendMessageCommand)
+      .map((c) => JSON.parse(c.args[0].input.MessageBody!) as { mediaId: string; albumId: string });
+    expect(bodies.map((b) => b.mediaId).sort()).toEqual(['m1', 'm2']);
+    expect(bodies.every((b) => b.albumId === 'a1')).toBe(true);
+  });
+  it('SQS に投入できなくても削除は受理される（定期掃除が続ける）', async () => {
+    const cookie = seedUser('u1');
+    seedAlbumWithMedia();
+    sqsMock.on(SendMessageCommand).rejects(new Error('sqs down'));
+    const res = await route(event('DELETE', '/api/albums/a1', { cookie, origin: ORIGIN }), cfg);
+    expect(res.statusCode).toBe(204);
+    expect((mem.get(metaKeys.media('a1', 'm1')) as Media).status).toBe('deleting');
+  });
+  it('Origin が無ければ403（CSRF）、未ログインは401、作成者でも管理者でもないメンバーは403。いずれも削除されない', async () => {
+    const owner = seedUser('u1');
+    const member = seedUser('u2');
+    seedAlbumWithMedia();
+    expect((await route(event('DELETE', '/api/albums/a1', { cookie: owner }), cfg)).statusCode).toBe(403);
+    expect((await route(event('DELETE', '/api/albums/a1', { origin: ORIGIN }), cfg)).statusCode).toBe(401);
+    expect(
+      (await route(event('DELETE', '/api/albums/a1', { cookie: member, origin: ORIGIN }), cfg)).statusCode,
+    ).toBe(403);
+    expect((mem.get(metaKeys.album('group', 'g1', 'a1')) as Album).deletedAt).toBeUndefined();
+    expect(sqsMock.commandCalls(SendMessageCommand)).toHaveLength(0);
+  });
+  it('詳細の応答に canDelete を付ける（作成者は true、ほかのメンバーは false）', async () => {
+    const owner = seedUser('u1');
+    const member = seedUser('u2');
+    seedAlbumWithMedia();
+    expect(JSON.parse((await route(event('GET', '/api/albums/a1', { cookie: owner }), cfg)).body).canDelete).toBe(true);
+    expect(JSON.parse((await route(event('GET', '/api/albums/a1', { cookie: member }), cfg)).body).canDelete).toBe(false);
+  });
+});
 describe('グループ名の変更・削除（PATCH/DELETE /api/groups/{groupId}）', () => {
   function seedGroup() {
     const group: Group = {

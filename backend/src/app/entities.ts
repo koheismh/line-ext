@@ -28,7 +28,18 @@ export async function getGroupIncludingDeleted(
   return getJson<Group>(ctx.metaBucket, metaKeys.group(groupId));
 }
 
+/** アルバムの正本（locator 経由）。削除済み（deletedAt あり）は存在しないものとして null を返す。 */
 export async function getAlbumByLocator(
+  ctx: AppContext,
+  albumId: string,
+): Promise<JsonRecord<Album> | null> {
+  const rec = await getAlbumIncludingDeleted(ctx, albumId);
+  if (!rec || rec.value.deletedAt) return null;
+  return rec;
+}
+
+/** 削除済みも含めてアルバムの正本を読む（削除の二重実行・残ったメディアの片付けなど、限られた用途のみ）。 */
+export async function getAlbumIncludingDeleted(
   ctx: AppContext,
   albumId: string,
 ): Promise<JsonRecord<Album> | null> {

@@ -67,7 +67,8 @@ POST   /api/invites/accept                      # 明示操作で参加
 GET    /api/albums                              # 権限のある所有主体のみ。?groupId= でそのグループのアルバムだけ（非メンバーは404）
 POST   /api/albums                              # 所有主体は user（本人）か group（メンバー）のどちらか必須
 GET    /api/albums/{albumId}                    # album-locator で所有主体を解決。所属のグループ名(ownerName)を同梱
-PATCH  /api/albums/{albumId}                    # 応答は GET と同じ形（ownerName 付き）
+PATCH  /api/albums/{albumId}                    # 応答は GET と同じ形（ownerName・canDelete 付き）
+DELETE /api/albums/{albumId}                    # 作成者・グループ管理者・個人の所有者のみ。印を付けて即座に非表示、中のメディアは削除ジョブでごみ箱へ（204）
 GET    /api/albums/{albumId}/media              # ready のみ・プレビューURLをまとめて返す・ページング
 POST   /api/albums/{albumId}/media/uploads          # 単一PUT署名URL（Content-Length/Type を署名）+ mediaId
 POST   /api/albums/{albumId}/media/uploads/multipart # マルチパート開始 → uploadId + パート署名URL群

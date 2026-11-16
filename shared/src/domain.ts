@@ -100,6 +100,13 @@ export interface Album {
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+  /**
+   * 削除時刻（墓標）。あれば存在しないものとして扱い、一覧・閲覧・アップロード・コメントのすべてから外す。
+   * 中のメディアは削除ジョブでごみ箱へ退避する（記録は消さず、復元できるようにする）。無い・null は未削除。
+   */
+  deletedAt?: string | null;
+  /** 削除した利用者の内部ID（削除の二重実行を本人にだけ冪等に成功させるために使う）。 */
+  deletedBy?: string | null;
 }
 
 /** 削除退避情報（deleting に移る時点で確定）。 */

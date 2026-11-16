@@ -51,6 +51,19 @@ export function canEditAlbum(album: Album, userId: string): boolean {
   return album.createdBy === userId;
 }
 
+/**
+ * アルバムを削除できるか。閲覧できることが前提（呼び出し側で確認する）。
+ * - user所有: 所有者本人
+ * - group所有: アルバムの作成者 または グループ管理者（メディア・コメントの削除権限と同じ考え方）
+ */
+export function canDeleteAlbum(album: Album, userId: string, group: Group | null): boolean {
+  if (album.ownerType === 'user') {
+    return album.ownerId === userId;
+  }
+  if (album.createdBy === userId) return true;
+  return !!group && isGroupAdmin(group, userId);
+}
+
 /** メディアをアップロードできるか＝閲覧権限と同じ（所有者/メンバー）。 */
 export function canUploadMedia(album: Album, userId: string, group: Group | null): boolean {
   return canViewAlbum(album, userId, group);

@@ -5,6 +5,14 @@ import type { DeletionJob } from '../app/deletion.js';
 
 const sqs = new SQSClient({});
 
+/** 複数の削除ジョブを投入する（アルバム削除用）。同時送信数を絞り、失敗は1件ずつ enqueueDeletion が握る。 */
+export async function enqueueDeletions(queueUrl: string, jobs: DeletionJob[]): Promise<void> {
+  const CONCURRENCY = 10;
+  for (let i = 0; i < jobs.length; i += CONCURRENCY) {
+    await Promise.all(jobs.slice(i, i + CONCURRENCY).map((job) => enqueueDeletion(queueUrl, job)));
+  }
+}
+
 /**
  * 削除ジョブを SQS に投入する。
  * 投入に失敗しても削除自体は受理済み（status=deleting）で、定期掃除が10分後に再投入するため、

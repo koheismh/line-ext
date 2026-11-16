@@ -59,10 +59,14 @@ export interface MediaPage {
 export interface AlbumDetail extends Album {
   /** group 所有ならグループ名。個人アルバムは null。 */
   ownerName: string | null;
+  /** 要求者がこのアルバムを削除できるか（削除ボタンの表示制御用。認可はサーバ側で行う）。 */
+  canDelete: boolean;
 }
 
 /** アルバム一覧の1件。表紙プレビューURLと所有主体名を同梱する。 */
-export interface AlbumListItem extends AlbumDetail {
+export interface AlbumListItem extends Album {
+  /** group 所有ならグループ名。個人アルバムは null。 */
+  ownerName: string | null;
   /** 表紙のプレビュー署名付きURL。表紙なし・未生成は null（プレースホルダ表示）。 */
   coverPreviewUrl: string | null;
 }

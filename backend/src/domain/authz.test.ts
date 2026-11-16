@@ -3,6 +3,7 @@ import {
   canViewAlbum,
   canCreateAlbum,
   canEditAlbum,
+  canDeleteAlbum,
   canUploadMedia,
   canDeleteMedia,
   canPostComment,
@@ -157,6 +158,23 @@ describe('canManageInvite', () => {
   it('管理者のみ', () => {
     expect(canManageInvite(group, 'admin')).toBe(true);
     expect(canManageInvite(group, 'member')).toBe(false);
+  });
+});
+describe('canDeleteAlbum', () => {
+  it('個人アルバムは所有者のみ', () => {
+    expect(canDeleteAlbum(userAlbum, 'owner', null)).toBe(true);
+    expect(canDeleteAlbum(userAlbum, 'other', null)).toBe(false);
+  });
+  it('グループのアルバムは作成者またはグループ管理者。ほかのメンバーは不可', () => {
+    const album = { ...groupAlbum, createdBy: 'member' };
+    expect(canDeleteAlbum(album, 'member', group)).toBe(true); // 作成者
+    expect(canDeleteAlbum(album, 'admin', group)).toBe(true); // 管理者
+    expect(canDeleteAlbum({ ...album, createdBy: 'admin' }, 'member', group)).toBe(false);
+    expect(canDeleteAlbum(album, 'stranger', group)).toBe(false);
+  });
+  it('削除済みのグループでは管理者の権限を認めない', () => {
+    const deleted: Group = { ...group, deletedAt: '2026-01-02T00:00:00Z' };
+    expect(canDeleteAlbum({ ...groupAlbum, createdBy: 'member' }, 'admin', deleted)).toBe(false);
   });
 });
 describe('canManageGroup（グループ名の変更・削除）', () => {
