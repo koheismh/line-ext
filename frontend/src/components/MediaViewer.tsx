@@ -1,9 +1,11 @@
 // メディアビューア（モーダル）。権限確認後の原本表示・動画再生・保存・削除・表紙設定・再処理。
 // 動画は再生URLの期限切れ時に自動再取得し、再生位置から続ける（要件5-8）。
-import { useCallback, useEffect, useRef, useState } from 'react';
+// 横にフリックすると、一覧の前後のメディアに移る（グリッドと同じ並び順）。
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { TRASH_RETENTION_DAYS, type Album, type MediaListItem } from '@photo-album/shared';
 import { api, errorMessage } from '../services/api.js';
 import { useSession } from '../store/session.js';
+import { swipeDirection } from '../lib/swipe.js';
 import { CommentPanel } from './CommentPanel.js';
 import { Alert, Button, Loading, Modal } from './ui/index.js';
 import styles from './MediaViewer.module.css';
@@ -16,11 +18,23 @@ function mayNotPlay(codec: string | null): boolean {
 export function MediaViewer({
   media,
   album,
+  items,
+  hasMore,
+  onSelect,
+  onLoadMore,
   onClose,
   onChanged,
 }: {
   media: MediaListItem;
   album: Album;
+  /** 表示中のアルバムの一覧（グリッドと同じ並び）。前後への移動に使う。 */
+  items: MediaListItem[];
+  /** 一覧に読み込んでいない続きがあるか。 */
+  hasMore: boolean;
+  /** 別のメディアに移る（前後への移動）。 */
+  onSelect: (next: MediaListItem) => void;
+  /** 続きを読み込む（読み込みが終わったら、次のメディアへ移る）。 */
+  onLoadMore: () => void;
   onClose: () => void;
   onChanged: () => void;
 }) {
@@ -32,17 +46,40 @@ export function MediaViewer({
   const videoRef = useRef<HTMLVideoElement>(null);
   const resumeAt = useRef<number | null>(null);
   const refreshCount = useRef(0);
+  /** 今表示しているメディアのID。移動の途中で届いた古い応答を捨てるために使う。 */
+  const activeId = useRef(media.mediaId);
+  /** 続きの読み込み中に、次のメディアへ移るための待ち受け（読み込み前の件数）。 */
+  const pendingFrom = useRef<number | null>(null);
+  const swipeStart = useRef<{ x: number; y: number; pointerId: number } | null>(null);
   const ready = media.status === 'ready';
+
+  const index = items.findIndex((m) => m.mediaId === media.mediaId);
+  const prev = index > 0 ? items[index - 1]! : null;
+  const next = index >= 0 ? (items[index + 1] ?? null) : null;
 
   const kind = media.kind === 'video' ? 'video' : 'original';
 
+  // 別のメディアに移ったら、前のメディアの状態（URL・エラー・動画の再生位置）を捨てる
+  useEffect(() => {
+    activeId.current = media.mediaId;
+    setUrl(null);
+    setError(null);
+    setNotice(null);
+    setPlaybackIssue(false);
+    refreshCount.current = 0;
+    resumeAt.current = null;
+  }, [media.mediaId]);
+
   const loadUrl = useCallback(async () => {
     if (!ready) return;
+    const id = media.mediaId;
     try {
-      const res = await api.media.url(media.mediaId, kind);
+      const res = await api.media.url(id, kind);
+      if (activeId.current !== id) return;
       setUrl(res.url);
       setError(null);
     } catch (err) {
+      if (activeId.current !== id) return;
       setError(errorMessage(err, '表示できませんでした。'));
     }
   }, [media.mediaId, kind, ready]);
@@ -50,6 +87,15 @@ export function MediaViewer({
   useEffect(() => {
     void loadUrl();
   }, [loadUrl]);
+
+  // 続きの読み込みが終わったら、待っていた次のメディアへ移る
+  useEffect(() => {
+    const from = pendingFrom.current;
+    if (from === null || items.length <= from) return;
+    pendingFrom.current = null;
+    const first = items[from];
+    if (first) onSelect(first);
+  }, [items, onSelect]);
 
   /** 動画の読み込みエラー: URL期限切れなら再取得して再生位置から続ける。同じURLなら再生不可と判断する。 */
   async function onVideoError() {
@@ -117,6 +163,45 @@ export function MediaViewer({
     }
   }
 
+  /** 次のメディアへ。一覧の最後まで読み込んでいて続きがあれば、読み込んでから移る。 */
+  function goNext() {
+    if (next) {
+      onSelect(next);
+    } else if (hasMore && index >= 0) {
+      pendingFrom.current = items.length;
+      onLoadMore();
+    }
+  }
+
+  function goPrev() {
+    if (prev) onSelect(prev);
+  }
+
+  // 写真・動画の上でのフリックを、前後の移動に変える（縦スクロールとは touch-action: pan-y で分ける）
+  function onSwipePointerDown(e: ReactPointerEvent<HTMLElement>) {
+    if (!e.isPrimary) return;
+    swipeStart.current = { x: e.clientX, y: e.clientY, pointerId: e.pointerId };
+  }
+
+  function onSwipePointerUp(e: ReactPointerEvent<HTMLElement>) {
+    const start = swipeStart.current;
+    swipeStart.current = null;
+    if (!start || start.pointerId !== e.pointerId) return;
+    const direction = swipeDirection(e.clientX - start.x, e.clientY - start.y);
+    if (direction === 'next') goNext();
+    else if (direction === 'prev') goPrev();
+  }
+
+  function onSwipePointerCancel() {
+    swipeStart.current = null;
+  }
+
+  const swipeHandlers = {
+    onPointerDown: onSwipePointerDown,
+    onPointerUp: onSwipePointerUp,
+    onPointerCancel: onSwipePointerCancel,
+  };
+
   const isPoster = media.createdBy === userId;
   const canDelete = ready || media.status === 'error'; // 処理中は24時間後に自動で失効・片付け（要件7-10, 7-11）
 
@@ -173,8 +258,13 @@ export function MediaViewer({
         {ready && !url && !error && <Loading />}
 
         {ready && url && media.kind === 'photo' && (
-          <div className={styles.stage}>
-            <img src={url} alt={media.displayFileName} className={styles.media} />
+          <div className={styles.stage} {...swipeHandlers}>
+            <img
+              src={url}
+              alt={media.displayFileName}
+              className={styles.media}
+              draggable={false}
+            />
           </div>
         )}
         {ready && url && media.kind === 'video' && (
@@ -184,7 +274,7 @@ export function MediaViewer({
                 この動画（{media.videoCodec}）はお使いのブラウザで再生できない場合があります。再生できないときは「保存」して端末で再生してください。
               </Alert>
             )}
-            <div className={styles.stage}>
+            <div className={styles.stage} {...swipeHandlers}>
               <video
                 ref={videoRef}
                 src={url}
@@ -203,7 +293,14 @@ export function MediaViewer({
           </>
         )}
 
-        {ready && <CommentPanel targetType="media" targetId={media.mediaId} compact />}
+        {ready && (prev || next || hasMore) && (
+          <p className={styles.hint} role="note">
+            左右にスワイプすると、前後の{media.kind === 'video' ? '動画' : '写真'}に移ります。
+          </p>
+        )}
+
+        {/* コメントは移動のたびに読み直す（前のメディアの返信先などを残さない） */}
+        {ready && <CommentPanel key={media.mediaId} targetType="media" targetId={media.mediaId} compact />}
       </div>
     </Modal>
   );

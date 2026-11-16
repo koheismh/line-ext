@@ -4,14 +4,23 @@
   gap: var(--space-4);
 }
 
-/* 写真・動画を置く台。暗めの背景で写真を引き立てる */
+/* 写真・動画を置く台。暗めの背景で写真を引き立てる。
+   touch-action: pan-y により、縦の操作はブラウザに任せ（スクロール）、横のフリックはスワイプとして受け取る */
 .stage {
   display: grid;
   place-items: center;
   overflow: hidden;
+  touch-action: pan-y;
   border: var(--border-width) solid var(--color-border);
   border-radius: var(--radius-md);
   background-color: var(--color-stage);
+}
+
+.hint {
+  margin: calc(-1 * var(--space-2)) 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  text-align: center;
 }
 
 .media {

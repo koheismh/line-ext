@@ -124,7 +124,9 @@ components/
   ui/               見た目の部品（Button / Card / Alert / Badge / Avatar / Field / Modal / Page / ProgressBar / EmptyState / Loading）
   AppLayout         ヘッダー（ナビ）・フッター（表示名・ログアウト）
   AlbumOwner        アルバムの所属（自分だけ／グループ「名前」）とだれが見られるか。グループはグループの画面へのリンク（要件3-12）
-  MediaViewer       原本表示/動画再生（権限確認後の署名付きURL）。モーダル（<dialog>）
+  MediaViewer       原本表示/動画再生（権限確認後の署名付きURL）。モーダル（<dialog>）。横フリックで前後のメディアへ移る（要件5-13）。
+                    移動のたびに表示状態（URL・エラー・動画の再生位置）と、コメント欄を読み直す。
+                    フリックの判定は lib/swipe.ts（横50px以上かつ縦より横が大きい）。表示は touch-action: pan-y で縦スクロールと分ける
   MediaGrid / AlbumGrid / UploadPanel / CommentPanel
 features/
   upload/           ファイル選択・容量判定・回線ガード・マルチパート制御・保留記録

@@ -224,6 +224,10 @@ export function AlbumDetailPage() {
         <MediaViewer
           media={viewing}
           album={album}
+          items={items}
+          hasMore={!!nextToken}
+          onSelect={setViewing}
+          onLoadMore={() => setPageCount((c) => c + 1)}
           onClose={() => setViewing(null)}
           onChanged={() => void refresh()}
         />
